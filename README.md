@@ -1,8 +1,8 @@
 # codex-lsp
 
-[![ci](https://github.com/code-yeongyu/codex-lsp/actions/workflows/ci.yml/badge.svg)](https://github.com/code-yeongyu/codex-lsp/actions/workflows/ci.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![ci](https://github.com/zoisythe/codex-lsp-standalone/actions/workflows/ci.yml/badge.svg)](https://github.com/zoisythe/codex-lsp-standalone/actions/workflows/ci.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Codex plugin that ports the standalone LSP runtime from [`pi-lsp-client`](https://github.com/code-yeongyu/pi-lsp-client). It gives Codex post-edit diagnostics plus explicit MCP tools for language-aware code work.
+Standalone Codex plugin that ports the LSP runtime from [`pi-lsp-client`](https://github.com/code-yeongyu/pi-lsp-client). It gives Codex post-edit diagnostics plus explicit MCP tools for language-aware code work.
 
 ## Architecture
 
@@ -101,8 +101,7 @@ npm run check
 npm pack --dry-run
 ```
 
-The `bootstrap` script installs and builds the `lsp-tools-mcp` git submodule so
-`@code-yeongyu/lsp-tools-mcp/dist/*.js` is available for the codex-lsp build.
+`.npmrc` sets `ignore-scripts=true` so `npm install` does not run dependency lifecycle hooks. The `bootstrap` script installs and builds the `lsp-tools-mcp` git submodule so `@code-yeongyu/lsp-tools-mcp/dist/*.js` is available for the codex-lsp build. Package scripts invoke TypeScript, Vitest, and Biome through `node` so WSL does not pick up a Windows `node.exe` shim.
 
 Smoke-test the hook:
 
@@ -118,17 +117,17 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node dist/cli.j
 
 ## Local Codex Installation
 
-From the marketplace root containing this plugin:
+This repository is a standalone Codex plugin. Add it as a marketplace source, then install `codex-lsp` from that source:
 
 ```bash
-codex plugin marketplace add /path/to/codex-plugins
-node /path/to/codex-plugins/scripts/install-local.mjs /path/to/codex-plugins
+codex plugin marketplace add https://github.com/zoisythe/codex-lsp-standalone.git
+codex plugin marketplace add .
 ```
 
-If your local Codex build exposes plugin install commands, you can install from the UI or CLI instead. For older local builds, the marketplace installer builds and copies the plugin into `~/.codex/plugins/cache/<marketplace>/omo/0.1.0` and enables:
+The repo marketplace lives at `.agents/plugins/marketplace.json` and points at this plugin root. After installation, enable:
 
 ```toml
-[plugins."omo@code-yeongyu-codex-plugins"]
+[plugins."codex-lsp@codex-lsp-standalone"]
 enabled = true
 ```
 

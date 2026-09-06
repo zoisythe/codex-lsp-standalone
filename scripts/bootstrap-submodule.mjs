@@ -29,10 +29,16 @@ if (!force && existsSync(submoduleDistCli)) {
 	process.exit(0);
 }
 
-console.log("Installing lsp-tools-mcp dependencies...");
-execSync("npm ci", { cwd: submoduleDir, stdio: "inherit" });
+try {
+	console.log("Installing lsp-tools-mcp dependencies...");
+	execSync("npm ci --ignore-scripts", { cwd: submoduleDir, stdio: "inherit" });
 
-console.log("Building lsp-tools-mcp...");
-execSync("npm run build", { cwd: submoduleDir, stdio: "inherit" });
+	console.log("Building lsp-tools-mcp...");
+	execSync("npm run build", { cwd: submoduleDir, stdio: "inherit" });
+} catch (error) {
+	const message = error instanceof Error ? error.message : String(error);
+	console.error(`Failed to bootstrap lsp-tools-mcp: ${message}`);
+	process.exit(1);
+}
 
 console.log("Done.");

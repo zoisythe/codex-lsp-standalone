@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Restore `.codex-plugin/plugin.json` so this repository is a standalone Codex plugin again.
+- Point package, plugin, and marketplace metadata at [`zoisythe/codex-lsp-standalone`](https://github.com/zoisythe/codex-lsp-standalone).
+- Disable npm lifecycle scripts during install so native optional packages cannot run install hooks.
+
 ## 0.2.0
 
 - Extracted the LSP runtime and MCP server into [`@code-yeongyu/lsp-tools-mcp`](https://github.com/code-yeongyu/lsp-tools-mcp).

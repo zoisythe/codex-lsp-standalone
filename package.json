@@ -1,17 +1,17 @@
 {
-	"name": "@code-yeongyu/codex-lsp",
+	"name": "@zoisythe/codex-lsp",
 	"version": "0.2.0",
-	"description": "Codex plugin that exposes Language Server Protocol tools and post-edit diagnostics.",
+	"description": "Standalone Codex plugin that exposes Language Server Protocol tools and post-edit diagnostics.",
 	"type": "module",
 	"packageManager": "npm@11.12.1",
 	"license": "MIT",
-	"homepage": "https://github.com/code-yeongyu/codex-lsp",
+	"homepage": "https://github.com/zoisythe/codex-lsp-standalone",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/code-yeongyu/codex-lsp.git"
+		"url": "git+https://github.com/zoisythe/codex-lsp-standalone.git"
 	},
 	"bugs": {
-		"url": "https://github.com/code-yeongyu/codex-lsp/issues"
+		"url": "https://github.com/zoisythe/codex-lsp-standalone/issues"
 	},
 	"keywords": [
 		"codex",
@@ -38,16 +38,16 @@
 	"scripts": {
 		"bootstrap": "node scripts/bootstrap-submodule.mjs",
 		"prebuild": "node scripts/bootstrap-submodule.mjs",
-		"build": "tsc -p tsconfig.build.json",
+		"build": "node ./node_modules/typescript/bin/tsc -p tsconfig.build.json",
 		"pretest": "node scripts/bootstrap-submodule.mjs",
-		"test": "vitest --run",
-		"test:watch": "vitest",
+		"test": "node ./node_modules/vitest/vitest.mjs --run",
+		"test:watch": "node ./node_modules/vitest/vitest.mjs",
 		"pretypecheck": "node scripts/bootstrap-submodule.mjs",
-		"typecheck": "tsc --noEmit",
-		"lint": "biome check src test",
-		"lint:fix": "biome check --write src test",
+		"typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
+		"lint": "node ./node_modules/@biomejs/biome/bin/biome check src test",
+		"lint:fix": "node ./node_modules/@biomejs/biome/bin/biome check --write src test",
 		"precheck": "node scripts/bootstrap-submodule.mjs",
-		"check": "tsc --noEmit && biome check src test && tsc -p tsconfig.build.json"
+		"check": "node ./node_modules/typescript/bin/tsc --noEmit && node ./node_modules/@biomejs/biome/bin/biome check src test && node ./node_modules/typescript/bin/tsc -p tsconfig.build.json"
 	},
 	"dependencies": {
 		"@code-yeongyu/lsp-tools-mcp": "file:./packages/lsp-tools-mcp"
