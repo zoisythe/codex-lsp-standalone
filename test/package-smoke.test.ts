@@ -7,6 +7,7 @@ type PackageJson = {
 	readonly packageManager: string;
 	readonly bin: Record<string, string>;
 	readonly dependencies: Record<string, string>;
+	readonly optionalDependencies: Record<string, string>;
 };
 
 type PluginJson = {
@@ -81,6 +82,9 @@ describe("plugin package metadata", () => {
 		expect(packageJson.dependencies).toEqual({
 			"@code-yeongyu/lsp-tools-mcp": "file:./packages/lsp-tools-mcp",
 		});
+		expect(packageJson.optionalDependencies).toEqual({
+			"smol-toml": "^1.7.0",
+		});
 		expect(packageJson.bin["codex-lsp"]).toBe("./dist/cli.js");
 		expect(pluginJson.hooks).toBe("./hooks/hooks.json");
 		expect(pluginJson.mcpServers).toBe("./.mcp.json");
@@ -111,7 +115,8 @@ function isPackageJson(value: unknown): value is PackageJson {
 		value["type"] === "module" &&
 		value["packageManager"] === "npm@11.12.1" &&
 		isStringRecord(value["bin"]) &&
-		isStringRecord(value["dependencies"])
+		isStringRecord(value["dependencies"]) &&
+		isStringRecord(value["optionalDependencies"])
 	);
 }
 

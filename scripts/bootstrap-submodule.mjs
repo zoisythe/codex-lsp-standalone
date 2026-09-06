@@ -31,7 +31,10 @@ if (!force && existsSync(submoduleDistCli)) {
 
 try {
 	console.log("Installing lsp-tools-mcp dependencies...");
-	execSync("npm ci --ignore-scripts", { cwd: submoduleDir, stdio: "inherit" });
+	execSync("npm ci --ignore-scripts --include=optional", {
+		cwd: submoduleDir,
+		stdio: "inherit",
+	});
 
 	console.log("Building lsp-tools-mcp...");
 	execSync("npm run build", { cwd: submoduleDir, stdio: "inherit" });

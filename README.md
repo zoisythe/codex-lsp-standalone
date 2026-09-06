@@ -6,7 +6,7 @@ Standalone Codex plugin that ports the LSP runtime from [`pi-lsp-client`](https:
 
 ## Architecture
 
-The LSP runtime moved to [`lsp-tools-mcp`](https://github.com/code-yeongyu/lsp-tools-mcp) and is consumed here as a git submodule at `packages/lsp-tools-mcp/`.
+The LSP runtime lives in [`lsp-tools-mcp`](https://github.com/zoisythe/lsp-tools-mcp) and is consumed here as a git submodule at `packages/lsp-tools-mcp/`.
 
 - `codex-lsp` keeps Codex-specific integration (`hook post-tool-use`, plugin metadata, package wiring).
 - `lsp-tools-mcp` owns MCP runtime, LSP manager, and tool implementations.
@@ -15,7 +15,7 @@ The LSP runtime moved to [`lsp-tools-mcp`](https://github.com/code-yeongyu/lsp-t
 ## Behavior
 
 | Case | Result |
-|------|--------|
+| ------ | -------- |
 | `apply_patch` succeeds | parses `tool_input.command`, extracts added/updated/moved files, and checks each with LSP error diagnostics |
 | `write` / `edit` / `multiedit` succeeds | checks `path`, `filePath`, or `file_path` aliases |
 | diagnostics contain errors | returns Codex `PostToolUse` blocking feedback and injects the same diagnostics as additional context so Codex fixes the file |
@@ -55,12 +55,12 @@ Example:
 
 ```json
 {
-	"lsp": {
-		"typescript": {
-			"command": ["typescript-language-server", "--stdio"],
-			"extensions": [".ts", ".tsx", ".js", ".jsx"]
-		}
-	}
+ "lsp": {
+  "typescript": {
+   "command": ["typescript-language-server", "--stdio"],
+   "extensions": [".ts", ".tsx", ".js", ".jsx"]
+  }
+ }
 }
 ```
 
@@ -75,7 +75,7 @@ The plugin ships:
 - `hooks/hooks.json` for the `PostToolUse` diagnostics hook.
 - `skills/lsp/SKILL.md` with MCP usage guidance.
 
-The runtime depends on `@code-yeongyu/lsp-tools-mcp` via `file:./packages/lsp-tools-mcp`, so marketplace builds must include submodule contents.
+The runtime depends on `@code-yeongyu/lsp-tools-mcp` via `file:./packages/lsp-tools-mcp` from the [`zoisythe/lsp-tools-mcp`](https://github.com/zoisythe/lsp-tools-mcp) fork, so marketplace builds must include submodule contents.
 
 The hook command is:
 

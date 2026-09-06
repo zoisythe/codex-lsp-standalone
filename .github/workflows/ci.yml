@@ -43,7 +43,7 @@ jobs:
         shell: bash
         run: |
           cd packages/lsp-tools-mcp
-          npm ci --ignore-scripts
+          npm ci --ignore-scripts --include=optional
           npm run build
 
       - name: Install dependencies

@@ -1,4 +1,4 @@
 [submodule "packages/lsp-tools-mcp"]
 	path = packages/lsp-tools-mcp
-	url = https://github.com/code-yeongyu/lsp-tools-mcp.git
+	url = https://github.com/zoisythe/lsp-tools-mcp.git
 	branch = main
