@@ -134,7 +134,7 @@ enabled = true
 ## Branch Rules and Releases
 
 - `main` is protected by `.github/branch-ruleset.json`.
-- CI runs Node 22 and 24 on Ubuntu, macOS, and Windows.
+- CI runs Node.js 24.20.0 LTS on Ubuntu, macOS, and Windows.
 - Releases are GitHub Releases tagged as `v<semver>`.
 - Publishing runs from the `publish` workflow after a GitHub Release is published.
 

@@ -8,6 +8,7 @@
 - Upgrade Biome to 2.5.12, Vitest to 5.0.0, and `@types/node` to 26.4.1. Require Node.js 22.12+ and enable `legacy-peer-deps` so the submodule's Vitest 4 tree can install beside it.
 - Point the `packages/lsp-tools-mcp` submodule at [`zoisythe/lsp-tools-mcp`](https://github.com/zoisythe/lsp-tools-mcp) and pin `main` at `9cc6f75`.
 - Install `smol-toml` as an optional dependency so Cargo workspace parsing works after a parent `npm install`.
+- Require Node.js 24.20.0 LTS (Krypton).
 
 ## 0.2.0
 
