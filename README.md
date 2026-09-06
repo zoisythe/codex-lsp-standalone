@@ -101,7 +101,7 @@ npm run check
 npm pack --dry-run
 ```
 
-`.npmrc` sets `ignore-scripts=true` so `npm install` does not run dependency lifecycle hooks. The `bootstrap` script installs and builds the `lsp-tools-mcp` git submodule so `@code-yeongyu/lsp-tools-mcp/dist/*.js` is available for the codex-lsp build. Package scripts invoke TypeScript, Vitest, and Biome through `node` so WSL does not pick up a Windows `node.exe` shim.
+`.npmrc` sets `ignore-scripts=true` and `legacy-peer-deps=true` so `npm install` skips dependency lifecycle hooks and can coexist with the submodule's Vitest 4 peer tree. The `bootstrap` script installs and builds the `lsp-tools-mcp` git submodule so `@code-yeongyu/lsp-tools-mcp/dist/*.js` is available for the codex-lsp build. Package scripts invoke TypeScript, Vitest, and Biome through `node` so WSL does not pick up a Windows `node.exe` shim.
 
 Smoke-test the hook:
 
@@ -134,7 +134,7 @@ enabled = true
 ## Branch Rules and Releases
 
 - `main` is protected by `.github/branch-ruleset.json`.
-- CI runs Node 20 and 22 on Ubuntu, macOS, and Windows.
+- CI runs Node 22 and 24 on Ubuntu, macOS, and Windows.
 - Releases are GitHub Releases tagged as `v<semver>`.
 - Publishing runs from the `publish` workflow after a GitHub Release is published.
 
