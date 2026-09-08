@@ -1,7 +1,7 @@
 {
 	"name": "@zoisythe/codex-lsp",
-	"version": "0.2.0",
-	"description": "Standalone Codex plugin that exposes Language Server Protocol tools and post-edit diagnostics.",
+	"version": "0.3.0",
+	"description": "Standalone Codex plugin with bundled LSP diagnostics, navigation, formatting, and post-edit hooks.",
 	"type": "module",
 	"packageManager": "npm@11.12.1",
 	"license": "MIT",
@@ -27,7 +27,6 @@
 	"files": [
 		"dist",
 		"hooks",
-		"skills",
 		".codex-plugin",
 		".mcp.json",
 		"LICENSE",
@@ -38,27 +37,25 @@
 	"scripts": {
 		"bootstrap": "node scripts/bootstrap-submodule.mjs",
 		"prebuild": "node scripts/bootstrap-submodule.mjs",
-		"build": "node ./node_modules/typescript/bin/tsc -p tsconfig.build.json",
+		"build": "node scripts/build.mjs",
 		"pretest": "node scripts/bootstrap-submodule.mjs",
-		"test": "node ./node_modules/vitest/vitest.mjs --run",
+		"test": "node ./node_modules/vitest/vitest.mjs --run && npm run test:install",
 		"test:watch": "node ./node_modules/vitest/vitest.mjs",
 		"pretypecheck": "node scripts/bootstrap-submodule.mjs",
 		"typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
-		"lint": "node ./node_modules/@biomejs/biome/bin/biome check src test",
-		"lint:fix": "node ./node_modules/@biomejs/biome/bin/biome check --write src test",
+		"lint": "node ./node_modules/@biomejs/biome/bin/biome check src test scripts",
+		"lint:fix": "node ./node_modules/@biomejs/biome/bin/biome check --write src test scripts",
 		"precheck": "node scripts/bootstrap-submodule.mjs",
-		"check": "node ./node_modules/typescript/bin/tsc --noEmit && node ./node_modules/@biomejs/biome/bin/biome check src test && node ./node_modules/typescript/bin/tsc -p tsconfig.build.json"
-	},
-	"dependencies": {
-		"@code-yeongyu/lsp-tools-mcp": "file:./packages/lsp-tools-mcp"
-	},
-	"optionalDependencies": {
-		"smol-toml": "^1.7.0"
+		"check": "node ./node_modules/typescript/bin/tsc --noEmit && node ./node_modules/@biomejs/biome/bin/biome check src test scripts && node scripts/build.mjs",
+		"test:install": "node --test test/install-smoke.test.mjs test/worker-smoke.test.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.12",
 		"@types/node": "^26.4.1",
+		"esbuild": "0.25.12",
+		"smol-toml": "1.7.0",
 		"typescript": "7.0.2",
+		"vite": "^8.2.2",
 		"vitest": "^5.0.0"
 	},
 	"engines": {

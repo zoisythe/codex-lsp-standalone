@@ -32,24 +32,17 @@ jobs:
           node-version: "24.20.0"
           registry-url: https://registry.npmjs.org
 
-      - name: Bootstrap lsp-tools-mcp submodule
-        shell: bash
-        run: |
-          cd packages/lsp-tools-mcp
-          npm ci --ignore-scripts --include=optional
-          npm run build
-
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
       - name: Check
         run: npm run check
 
-      - name: Unit tests
-        run: npm test
+      - name: Verify committed bundle
+        run: git diff --exit-code -- dist
 
-      - name: Package smoke
-        run: npm pack --dry-run
+      - name: Full test suite
+        run: npm test
 
       - name: Publish to npm
         run: |

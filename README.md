@@ -2,44 +2,49 @@
 
 [![ci](https://github.com/zoisythe/codex-lsp-standalone/actions/workflows/ci.yml/badge.svg)](https://github.com/zoisythe/codex-lsp-standalone/actions/workflows/ci.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Standalone Codex plugin that ports the LSP runtime from [`pi-lsp-client`](https://github.com/code-yeongyu/pi-lsp-client). It gives Codex post-edit diagnostics plus explicit MCP tools for language-aware code work.
+Standalone Codex plugin that bundles an LSP worker for post-edit diagnostics plus four static MCP tools. Development still uses the [`lsp-tools-mcp`](https://github.com/zoisythe/lsp-tools-mcp) submodule; installed copies run only the committed `dist/cli.js` bundle.
 
 ## Architecture
 
-The LSP runtime lives in [`lsp-tools-mcp`](https://github.com/zoisythe/lsp-tools-mcp) and is consumed here as a git submodule at `packages/lsp-tools-mcp/`.
+```text
+Codex --stdio--> dist/cli.js mcp -------+
+                                      +--> workspace worker --> LspManager / lint runners
+Codex --Hook--> dist/cli.js hook -------+                      --> shared result cache
+```
 
-- `codex-lsp` keeps Codex-specific integration (`hook post-tool-use`, plugin metadata, package wiring).
-- `lsp-tools-mcp` owns MCP runtime, LSP manager, and tool implementations.
-- `src/cli.ts` routes `mcp` to upstream runtime and keeps `hook post-tool-use` local.
+- MCP initialize does not start language servers.
+- Hooks are short-lived clients; the worker is shared per normalized workspace.
+- Everyday hooks never format or lint-fix. `lsp_format` and rename are explicit writes.
+- No Skills are installed.
 
-## Behavior
+## MCP tools
 
-| Case | Result |
-| ------ | -------- |
-| `apply_patch` succeeds | parses `tool_input.command`, extracts added/updated/moved files, and checks each with LSP error diagnostics |
-| `write` / `edit` / `multiedit` succeeds | checks `path`, `filePath`, or `file_path` aliases |
-| diagnostics contain errors | returns Codex `PostToolUse` blocking feedback and injects the same diagnostics as additional context so Codex fixes the file |
-| no diagnostics | emits no hook output |
-| unsupported extension | emits no hook output |
-| missing configured language server | surfaces the install/config message through hook or MCP output |
+| Tool | Role |
+| --- | --- |
+| `check_diagnostics` | Unified LSP/lint state: `delta`, `all`, `full`, `status` |
+| `lsp_diagnostics` | Active pure-LSP diagnostics for paths/directories |
+| `lsp_navigation` | definition / references / symbols / prepare_rename / rename |
+| `lsp_format` | Explicit formatter or LSP formatting for scoped paths |
 
-Deletes are ignored because they cannot introduce new diagnostics.
+All tools require an absolute `workspace` path. Positions for navigation are 1-based. `all` only reads this session's touched files; it is not a repository scan. `full` and directory checks use a bounded inventory (10,000 files, 1 MiB per file), with up to 200 checks per request. Follow `start`/`offset` continuations on an unchanged tree; narrow the scope if inventory is incomplete. Explicit files bypass ignore filtering, but must resolve inside the workspace and are content-validated before cache reuse.
 
-## MCP Tools
+Navigation is conservatively marked as a write-capable tool because it includes rename. Codex may ask for approval even for definition/prepare-rename. Non-interactive `codex exec` with approval policy `never` will reject these calls unless the user has explicitly approved the plugin tool policy.
 
-- `lsp.status`
-- `lsp.diagnostics`
-- `lsp.goto_definition`
-- `lsp.find_references`
-- `lsp.symbols`
-- `lsp.prepare_rename`
-- `lsp.rename`
+## Hooks
 
-`lsp.rename` applies the returned workspace edit to files. Use `lsp.prepare_rename` first when possible.
+| Event | Behavior |
+| --- | --- |
+| `SessionStart` | Record the current file fingerprint baseline |
+| `PostToolUse` | Recheck files whose content changed since the baseline, including shell mutations |
+| `PreToolUse` | Recover a missing initial baseline without replacing an existing one |
+| `Stop` | Bounded retry of pending/stale touched files; fresh errors can block once |
+| `SessionEnd` | Drop session delivery state |
+
+Hook output is compact additional context after edits, or a single Stop reason. Missing tools/timeouts degrade to short notes; incomplete results are never reported as clean.
 
 ## Configuration
 
-Project config:
+Project LSP config (requires user trust for executable project settings):
 
 ```text
 .codex/lsp-client.json
@@ -55,97 +60,56 @@ Example:
 
 ```json
 {
- "lsp": {
-  "typescript": {
-   "command": ["typescript-language-server", "--stdio"],
-   "extensions": [".ts", ".tsx", ".js", ".jsx"]
-  }
- }
+  "lsp": {
+    "typescript": {
+      "command": ["typescript-language-server", "--stdio"],
+      "extensions": [".ts", ".tsx", ".js", ".jsx"]
+    }
+  },
+  "trustedWorkspaces": ["/absolute/path/to/repo"]
 }
 ```
 
-Built-in server definitions are used when no custom config overrides them. `lsp.status` shows which configured servers are installed or missing.
+Put `trustedWorkspaces` in the **user** config, not repository config; a repository cannot trust itself. Independent lint runners (Biome, ESLint, Ruff) run only for trusted workspaces and only when the matching project config is present. Biome takes precedence over ESLint for JS/TS when both configs exist; Python uses Ruff. They check; they do not fix or install packages. Ruff runs with `--no-cache` so it does not introduce files into Hook tracking.
 
-## Codex Plugin
+Language servers themselves are not bundled. Install the servers your projects need on `PATH`.
 
-The plugin ships:
+## Codex plugin layout
 
-- `.codex-plugin/plugin.json` for Codex plugin discovery.
-- `.mcp.json` for the `lsp` MCP server.
-- `hooks/hooks.json` for the `PostToolUse` diagnostics hook.
-- `skills/lsp/SKILL.md` with MCP usage guidance.
+- `.codex-plugin/plugin.json` — plugin discovery
+- `.agents/plugins/marketplace.json` — local/GitHub marketplace entry
+- `.mcp.json` — `node ./dist/cli.js mcp`, with plugin-relative `cwd: "."`
+- `hooks/hooks.json` — SessionStart / PreToolUse / PostToolUse / Stop / SessionEnd
+- `dist/cli.js` — self-contained runtime bundle
 
-The runtime depends on `@code-yeongyu/lsp-tools-mcp` via `file:./packages/lsp-tools-mcp` from the [`zoisythe/lsp-tools-mcp`](https://github.com/zoisythe/lsp-tools-mcp) fork, so marketplace builds must include submodule contents.
+Codex CLI 0.153.4 resolves the MCP `cwd` relative to the installed plugin root; the user's project is supplied separately as `workspace`. Hook commands use `${PLUGIN_ROOT}`. This was tested with separate plugin/workspace paths containing spaces and Chinese characters, without submodule contents or runtime `node_modules` in the plugin.
 
-The hook command is:
+## Install from GitHub marketplace
 
 ```bash
-node "${PLUGIN_ROOT}/dist/cli.js" hook post-tool-use
+codex plugin marketplace add https://github.com/zoisythe/codex-lsp-standalone
+codex plugin add codex-lsp@codex-lsp-standalone
 ```
 
-The MCP command is:
+Adding a marketplace does not install its plugin. Start a new Codex session after installation and use `/hooks` to review/trust the exact Hook definitions. New or changed definitions require review again; installing does not grant Hook trust. The commands above follow `codex-cli 0.153.4` help (`plugin add`, not `plugin install`).
+
+The plugin itself requires no `npm install`, recursive submodule checkout, or runtime JS download. Node, language servers and project linters are prerequisites, not part of that promise. In particular, `typescript-language-server` requires a TypeScript distribution containing `tsserver.js`; the acceptance project uses TypeScript 5.9.3, separate from this repository's TypeScript 7 build compiler.
+
+See [validation evidence and remaining limitations](docs/validation.md).
+
+## Local development
 
 ```bash
-node ./packages/lsp-tools-mcp/dist/cli.js mcp
-```
-
-## Local Development
-
-```bash
-git submodule update --init --recursive
-npm run bootstrap     # installs + builds the lsp-tools-mcp submodule
+git submodule update --init packages/lsp-tools-mcp
 npm install
+npm run bootstrap   # rebuild submodule types/JS used by the source tree
 npm test
 npm run typecheck
-npm run check
-npm pack --dry-run
+npm run check       # typecheck + biome + rebuild dist bundle
 ```
 
-`.npmrc` sets `ignore-scripts=true` and `legacy-peer-deps=true` so `npm install` skips dependency lifecycle hooks and can coexist with the submodule's Vitest 4 peer tree. The `bootstrap` script installs and builds the `lsp-tools-mcp` git submodule so `@code-yeongyu/lsp-tools-mcp/dist/*.js` is available for the codex-lsp build. Package scripts invoke TypeScript, Vitest, and Biome through `node` so WSL does not pick up a Windows `node.exe` shim.
-
-Smoke-test the hook:
-
-```bash
-node dist/cli.js hook post-tool-use < test/fixtures/post-tool-use.json
-```
-
-Smoke-test the MCP server:
-
-```bash
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node dist/cli.js mcp
-```
-
-## Local Codex Installation
-
-This repository is a standalone Codex plugin. Add it as a marketplace source, then install `codex-lsp` from that source:
-
-```bash
-codex plugin marketplace add https://github.com/zoisythe/codex-lsp-standalone.git
-codex plugin marketplace add .
-```
-
-The repo marketplace lives at `.agents/plugins/marketplace.json` and points at this plugin root. After installation, enable:
-
-```toml
-[plugins."codex-lsp@codex-lsp-standalone"]
-enabled = true
-```
-
-## Branch Rules and Releases
-
-- `main` is protected by `.github/branch-ruleset.json`.
-- CI runs Node.js 24.20.0 LTS on Ubuntu, macOS, and Windows.
-- Releases are GitHub Releases tagged as `v<semver>`.
-- Publishing runs from the `publish` workflow after a GitHub Release is published.
+Node.js `>=24.20.0` is required.
 
 ## Privacy
 
-This plugin runs locally. It starts configured language-server commands on your machine and does not call a network service by itself.
-
-## License
-
-[MIT](LICENSE).
-
-## Related
-
-- [pi-lsp-client](https://github.com/code-yeongyu/pi-lsp-client) - source extension this Codex plugin ports.
+The plugin runs locally. It does not phone home. Diagnostics stay on the machine that runs Codex and the worker process.

@@ -39,21 +39,33 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
-      - name: Bootstrap lsp-tools-mcp submodule
-        shell: bash
-        run: |
-          cd packages/lsp-tools-mcp
-          npm ci --ignore-scripts --include=optional
-          npm run build
-
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
       - name: Check
         run: npm run check
 
-      - name: Unit tests
+      - name: Verify committed bundle matches sources
+        run: git diff --exit-code -- dist
+
+      - name: Full test suite
         run: npm test
 
-      - name: Package smoke
-        run: npm pack --dry-run
+  delivery:
+    name: committed delivery (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          submodules: false
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24.20.0"
+      - name: Execute delivered bundle without installing dependencies
+        run: node --test test/install-smoke.test.mjs

@@ -1,33 +1,19 @@
 #!/usr/bin/env node
-import { argv, stderr } from "node:process";
-
-import { disposeDefaultLspManager } from "@code-yeongyu/lsp-tools-mcp/dist/lsp/manager.js";
-import { runMcpStdioServer } from "@code-yeongyu/lsp-tools-mcp/dist/mcp.js";
-import { runPostToolUseHookCli } from "./codex-hook.js";
+import { runHookCli } from "./codex-hook.js";
+import { restoreInstalledHome } from "./environment.js";
+import { runMcp } from "./protocol.js";
+import { message } from "./results.js";
+import { runWorker } from "./worker.js";
 
 async function main(): Promise<void> {
-	const [command = "mcp", subcommand = ""] = argv.slice(2);
-
-	try {
-		if (command === "hook" && subcommand === "post-tool-use") {
-			await runPostToolUseHookCli();
-			return;
-		}
-
-		if (command === "mcp") {
-			await runMcpStdioServer();
-			return;
-		}
-
-		stderr.write("Usage: codex-lsp [mcp | hook post-tool-use]\n");
-		process.exitCode = 2;
-	} finally {
-		await disposeDefaultLspManager();
-	}
+	restoreInstalledHome();
+	const [command = "mcp", root, dir, socket] = process.argv.slice(2);
+	if (command === "mcp") await runMcp();
+	else if (command === "hook") await runHookCli();
+	else if (command === "worker" && root && dir && socket) await runWorker(root, dir, socket);
+	else throw new Error("Usage: codex-lsp [mcp | hook]");
 }
-
-main().catch(async (error: unknown) => {
-	stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
-	await disposeDefaultLspManager();
+main().catch((error: unknown) => {
+	process.stderr.write(`${message(error)}\n`);
 	process.exitCode = 1;
 });

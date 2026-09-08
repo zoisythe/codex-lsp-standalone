@@ -1,14 +1,56 @@
 {
 	"hooks": {
-		"PostToolUse": [
+		"SessionStart": [
 			{
-				"matcher": "^(apply_patch|Write|Edit|MultiEdit|multi_edit|write|edit|multiedit)$",
 				"hooks": [
 					{
 						"type": "command",
-						"command": "node \"${PLUGIN_ROOT}/dist/cli.js\" hook post-tool-use",
+						"command": "node \"${PLUGIN_ROOT}/dist/cli.js\" hook",
+						"timeout": 30,
+						"statusMessage": "recording workspace baseline"
+					}
+				]
+			}
+		],
+		"SessionEnd": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "node \"${PLUGIN_ROOT}/dist/cli.js\" hook",
+						"timeout": 3,
+						"statusMessage": "clearing LSP session state"
+					}
+				]
+			}
+		],
+		"PreToolUse": [
+			{
+				"matcher": "^(apply_patch|Write|Edit|Bash)$",
+				"hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/dist/cli.js\" hook", "timeout": 30 }]
+			}
+		],
+		"PostToolUse": [
+			{
+				"matcher": "^(apply_patch|Write|Edit|MultiEdit|multi_edit|write|edit|multiedit|Bash|bash|shell|Shell|exec_command|unified_exec)$",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "node \"${PLUGIN_ROOT}/dist/cli.js\" hook",
 						"timeout": 60,
 						"statusMessage": "checking LSP diagnostics"
+					}
+				]
+			}
+		],
+		"Stop": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "node \"${PLUGIN_ROOT}/dist/cli.js\" hook",
+						"timeout": 60,
+						"statusMessage": "checking pending diagnostics"
 					}
 				]
 			}

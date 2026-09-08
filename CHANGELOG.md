@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.3.0
+
+- Ship a self-contained `dist/cli.js` bundle so clean installs no longer need submodule contents or runtime `node_modules`.
+- Replace the upstream MCP tool surface with four static tools: `check_diagnostics`, `lsp_diagnostics`, `lsp_navigation`, and `lsp_format`.
+- Add a workspace-shared worker, inventory-based PostToolUse/Bash change tracking, SessionStart baseline, and SessionEnd cleanup.
+- Remove Skills from the plugin package and run the bundle from Codex's plugin-relative MCP cwd.
+- Keep Biome/ESLint/Ruff as trusted, check-only runners; formatting remains an explicit tool. Disable Ruff cache writes to avoid self-triggered Hook feedback.
+- Validate MCP arguments, content-check explicitly ignored files before cache reuse, retain over-budget changed paths as pending, and recheck rename targets.
+- Add source/bundle drift checking and a dependency-free delivery CI job on Linux, macOS and Windows.
+
 - Restore `.codex-plugin/plugin.json` so this repository is a standalone Codex plugin again.
 - Point package, plugin, and marketplace metadata at [`zoisythe/codex-lsp-standalone`](https://github.com/zoisythe/codex-lsp-standalone).
 - Disable npm lifecycle scripts during install so native optional packages cannot run install hooks.

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 type PackageJson = {
@@ -6,14 +6,16 @@ type PackageJson = {
 	readonly type: string;
 	readonly packageManager: string;
 	readonly bin: Record<string, string>;
-	readonly dependencies: Record<string, string>;
-	readonly optionalDependencies: Record<string, string>;
+	readonly files: readonly string[];
+	readonly dependencies?: Record<string, string>;
+	readonly optionalDependencies?: Record<string, string>;
 };
 
 type PluginJson = {
 	readonly version: string;
 	readonly hooks: string;
 	readonly mcpServers: string;
+	readonly skills?: unknown;
 };
 
 type HookCommand = {
@@ -31,6 +33,7 @@ type HooksJson = {
 type McpServer = {
 	readonly command: string;
 	readonly args: readonly string[];
+	readonly cwd?: string;
 };
 
 type McpJson = {
@@ -62,49 +65,45 @@ function readMcpJson(path: string): McpJson {
 }
 
 describe("plugin package metadata", () => {
-	it("#given packaged plugin files #when validating entrypoints #then hook command uses portable plugin root interpolation", () => {
-		// given
+	it("ships a self-contained bundle entry without skills or runtime package deps", () => {
 		const packageJson = readPackageJson("package.json");
 		const pluginJson = readPluginJson(".codex-plugin/plugin.json");
 		const hooksJson = readHooksJson("hooks/hooks.json");
 		const mcpJson = readMcpJson(".mcp.json");
 		const cliSource = readFileSync("src/cli.ts", "utf8");
-
-		// when
-		const command = hooksJson.hooks["PostToolUse"]?.[0]?.hooks[0]?.command;
-		const lspServer = mcpJson.mcpServers["lsp"];
 		const pluginRoot = ["$", "{PLUGIN_ROOT}"].join("");
+		const lspServer = mcpJson.mcpServers["lsp"];
+		const postToolUse = hooksJson.hooks["PostToolUse"]?.[0]?.hooks[0]?.command;
+		const sessionStart = hooksJson.hooks["SessionStart"]?.[0]?.hooks[0]?.command;
 
-		// then
 		expect(pluginJson.version).toBe(packageJson.version);
+		expect(packageJson.version).toBe("0.3.0");
 		expect(packageJson.type).toBe("module");
 		expect(packageJson.packageManager).toBe("npm@11.12.1");
-		expect(packageJson.dependencies).toEqual({
-			"@code-yeongyu/lsp-tools-mcp": "file:./packages/lsp-tools-mcp",
-		});
-		expect(packageJson.optionalDependencies).toEqual({
-			"smol-toml": "^1.7.0",
-		});
+		expect(packageJson.dependencies).toBeUndefined();
+		expect(packageJson.optionalDependencies).toBeUndefined();
+		expect(packageJson.files).toEqual([
+			"dist",
+			"hooks",
+			".codex-plugin",
+			".mcp.json",
+			"LICENSE",
+			"NOTICE",
+			"README.md",
+			"CHANGELOG.md",
+		]);
+		expect(packageJson.files).not.toContain("skills");
 		expect(packageJson.bin["codex-lsp"]).toBe("./dist/cli.js");
 		expect(pluginJson.hooks).toBe("./hooks/hooks.json");
 		expect(pluginJson.mcpServers).toBe("./.mcp.json");
+		expect(pluginJson.skills).toBeUndefined();
+		expect(existsSync("skills/lsp/SKILL.md")).toBe(false);
 		expect(cliSource.startsWith("#!/usr/bin/env node")).toBe(true);
-		expect(command).toBe(`node "${pluginRoot}/dist/cli.js" hook post-tool-use`);
+		expect(sessionStart).toBe(`node "${pluginRoot}/dist/cli.js" hook`);
+		expect(postToolUse).toBe(`node "${pluginRoot}/dist/cli.js" hook`);
 		expect(lspServer?.command).toBe("node");
-		expect(lspServer?.args).toEqual(["./packages/lsp-tools-mcp/dist/cli.js", "mcp"]);
-	});
-
-	it("#given LSP skill guidance #when validating MCP tool instructions #then tool names are not framed as shell commands", () => {
-		// given
-		const skill = readFileSync("skills/lsp/SKILL.md", "utf8");
-
-		// when
-		const mentionsToolInterface = skill.includes("through the tool interface");
-		const rejectsShellExecution = skill.includes("not shell commands");
-
-		// then
-		expect(mentionsToolInterface).toBe(true);
-		expect(rejectsShellExecution).toBe(true);
+		expect(lspServer?.args).toEqual(["./dist/cli.js", "mcp"]);
+		expect(lspServer?.cwd).toBe(".");
 	});
 });
 
@@ -115,8 +114,10 @@ function isPackageJson(value: unknown): value is PackageJson {
 		value["type"] === "module" &&
 		value["packageManager"] === "npm@11.12.1" &&
 		isStringRecord(value["bin"]) &&
-		isStringRecord(value["dependencies"]) &&
-		isStringRecord(value["optionalDependencies"])
+		Array.isArray(value["files"]) &&
+		value["files"].every((item) => typeof item === "string") &&
+		(value["dependencies"] === undefined || isStringRecord(value["dependencies"])) &&
+		(value["optionalDependencies"] === undefined || isStringRecord(value["optionalDependencies"]))
 	);
 }
 
@@ -156,7 +157,8 @@ function isMcpServer(value: unknown): value is McpServer {
 		isRecord(value) &&
 		typeof value["command"] === "string" &&
 		Array.isArray(value["args"]) &&
-		value["args"].every((item) => typeof item === "string")
+		value["args"].every((item) => typeof item === "string") &&
+		(value["cwd"] === undefined || typeof value["cwd"] === "string")
 	);
 }
 
