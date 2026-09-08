@@ -75,6 +75,17 @@ default_tools_approval_mode = "approve"
 - push 诊断失效后仅清空缓存，未触发服务器重新发布，导致格式化/移动后永久 pending：失效时关闭打开的文档，后续按最终磁盘内容重新打开，保留同一个 LspManager/client。
 - 显式忽略文件按内容校验缓存；超过 200 个变更保留 pending；rename 后复查所有清单内变化目标；MCP facade 验证必填项、类型、范围与枚举。
 
+## 推送后的真实 GitHub 安装
+
+实现提交 `50138d8` 推送到 main 后，在第二个全新隔离 Codex home 执行：
+
+```bash
+codex plugin marketplace add https://github.com/zoisythe/codex-lsp-standalone --ref main --json
+codex plugin add codex-lsp@codex-lsp-standalone --json
+```
+
+安装成功；实际安装 bundle 与本地已测 bundle 逐字节一致，不含 node_modules、Skills 或 submodule 源码。随后真实 Codex MCP `status` 成功，JSON 文件主动诊断成功。最初将 package.json 当作“不支持”的负例是测试输入错误（本机实际存在 JSON server），因此另用 `.codex_acceptance_unknown` 文件复测，明确返回 `partial; checked=0 pending=0 skipped=1 failed=0` 及缺服务器说明，不伪报 clean。未执行安装时 npm install 或递归获取 submodule。
+
 ## 尚未完成的计划项
 
 以下是后续工作，不应将当前阶段称为完整设计验收：
@@ -85,4 +96,4 @@ default_tools_approval_mode = "approve"
 - 扫描为排序列表的 start/offset 分页，无绑定内容版本的续扫 token；目录变动时应从头重扫。超过库存预算仍需缩小范围。
 - 自定义 runner 路由、项目 exclude、多根/依赖配置状态更精细的缓存失效，以及更广泛的并发编辑与取消验收。
 - `/hooks` 交互式持久信任、真实超过 10 分钟的闲置连接、跨平台 CLI 实测。现有子进程测试只加速旧长定时器。
-- 真实 GitHub marketplace 安装只能在本次提交推送之后验收；本地安装成功不能代替这一项。
+- 远端 CI 运行结果尚未取得；不能将 CI 配置提交视作跨平台测试成功。
