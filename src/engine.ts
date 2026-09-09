@@ -1,12 +1,17 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
-import { relative, sep } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { relative } from "node:path";
+import { configuration } from "./config.js";
 import { hash, type Inventory, inventory, workspacePath } from "./files.js";
+import { analysisIdentity } from "./identity.js";
 import { Languages } from "./language.js";
-import { type FileResult, message, number, record, render, text } from "./results.js";
+import { logEvent } from "./log.js";
+import { Metadata } from "./metadata.js";
+import { type FileResult, message, number, render, text } from "./results.js";
 import { formatWithRunner, lint } from "./runners.js";
 
 type Checker = (path: string, signal: AbortSignal, lspOnly: boolean) => Promise<FileResult>;
 interface Cached {
+	identity: string;
 	version: string;
 	content: string;
 	result: FileResult;
@@ -16,13 +21,13 @@ interface Session {
 	touched: Set<string>;
 	current: Set<string>;
 	shown: Map<string, string>;
-	baseline: Map<string, string>;
-	hasBaseline: boolean;
 }
 export class Engine {
+	private readonly identities = new Map<string, string>();
 	private readonly cache = new Map<string, Cached>();
 	private readonly sessions = new Map<string, Session>();
 	private language: Languages | undefined;
+	private configVersion = "";
 	private previousSnapshot: Inventory | undefined;
 	private queue: Promise<unknown> = Promise.resolve();
 	private readonly checker: Checker;
@@ -33,14 +38,20 @@ export class Engine {
 		this.checker =
 			checker ??
 			(async (path, signal, lspOnly) => {
-				this.language ??= new Languages(root);
+				this.language ??= new Languages(root, await configuration(root));
 				const lsp = await this.language.check(path, signal);
 				if (lspOnly) return lsp;
 				const runner = await lint(root, path, signal);
-				if (!runner) return lsp;
+				if (!runner)
+					return {
+						...lsp,
+						channels: { lsp: lsp.state, lint: "skipped" },
+						note: [lsp.note, "lint requires workspace trust"].filter(Boolean).join("; "),
+					};
 				return {
 					path,
-					state: lsp.state === "complete" ? runner.state : lsp.state,
+					state: lsp.state === "complete" ? (runner.state === "skipped" ? "complete" : runner.state) : lsp.state,
+					channels: { lsp: lsp.state, lint: runner.state },
 					findings: [...lsp.findings, ...runner.findings],
 					...(lsp.note || runner.note ? { note: [lsp.note, runner.note].filter(Boolean).join("; ") } : {}),
 				};
@@ -54,8 +65,6 @@ export class Engine {
 				touched: new Set(),
 				current: new Set(),
 				shown: new Map(),
-				baseline: new Map(),
-				hasBaseline: false,
 			};
 			this.sessions.set(id, session);
 		}
@@ -74,15 +83,8 @@ export class Engine {
 			);
 		return "manual";
 	}
-	async check(
-		paths: string[],
-		id: string,
-		turn: string,
-		lspOnly = false,
-		signal: AbortSignal = new AbortController().signal,
-		offset = 0,
-	): Promise<string> {
-		const snapshot = await inventory(this.root);
+	private async synchronize(snapshot: Inventory): Promise<void> {
+		if (!snapshot.complete) await this.close();
 		const previous = this.previousSnapshot;
 		if (previous?.version !== snapshot.version && this.language) {
 			const configChanged = [...new Set([...snapshot.files.keys(), ...(previous?.files.keys() ?? [])])].some(
@@ -96,6 +98,20 @@ export class Engine {
 			} else await this.language.sync(snapshot.files);
 		}
 		this.previousSnapshot = snapshot;
+	}
+
+	async check(
+		paths: string[],
+		id: string,
+		turn: string,
+		lspOnly = false,
+		signal: AbortSignal = new AbortController().signal,
+		offset = 0,
+	): Promise<string> {
+		const config = await configuration(this.root);
+		const snapshot = await inventory(this.root, 10000, signal, config.exclude, this.root, true);
+		snapshot.version = hash(snapshot.version + config.version);
+		await this.synchronize(snapshot);
 		const session = this.session(id, turn);
 		const results: FileResult[] = [];
 		const deadline = Date.now() + 45000;
@@ -120,10 +136,22 @@ export class Engine {
 			}
 			const key = `${lspOnly ? "lsp:" : ""}${path}`;
 			const cached = this.cache.get(key);
-			const content = hash(await readFile(await workspacePath(this.root, path), "utf8"));
+			const identity = await analysisIdentity(this.root, [path], config, signal);
+			if (this.identities.has(path) && this.identities.get(path) !== identity) {
+				await this.close();
+				this.cache.clear();
+			}
+			this.identities.set(path, identity);
+			const absolute = await workspacePath(this.root, path);
+			if ((await stat(absolute)).size > 1024 * 1024) {
+				results.push({ path, state: "skipped", findings: [], note: "File exceeds 1 MiB" });
+				continue;
+			}
+			const content = hash(await readFile(absolute, { encoding: "utf8", signal }));
 			if (
 				snapshot.complete &&
 				cached?.version === snapshot.version &&
+				cached.identity === identity &&
 				cached.content === content &&
 				cached.result.state === "complete"
 			) {
@@ -131,35 +159,46 @@ export class Engine {
 				continue;
 			}
 			const result = await this.checker(path, signal, lspOnly);
-			if (hash(await readFile(await workspacePath(this.root, path), "utf8")) !== content) {
+			signal.throwIfAborted();
+			if (
+				hash(await readFile(await workspacePath(this.root, path), { encoding: "utf8", signal })) !== content ||
+				(await analysisIdentity(this.root, [path], await configuration(this.root), signal)) !== identity
+			) {
 				result.state = "stale";
 				result.note = "File changed during diagnostics; retry";
 			}
-			this.cache.set(key, { version: snapshot.version, content, result });
+			this.cache.set(key, { version: snapshot.version, identity, content, result });
 			results.push(result);
 		}
-		const after = await inventory(this.root);
-		if (!after.complete || after.version !== snapshot.version) {
+		const after = await inventory(this.root, 10000, signal, config.exclude, this.root, true);
+		after.version = hash(after.version + (await configuration(this.root)).version);
+		if (after.version !== snapshot.version) {
 			for (const result of results) {
 				result.state = "stale";
 				result.note = "Workspace changed or snapshot incomplete; retry";
 			}
 		}
-		if (paths.length > 200 || !snapshot.complete)
+		if (paths.length > 200)
 			results.push({
 				path: ".",
 				state: "pending",
 				findings: [],
 				note: "File/snapshot budget exceeded; narrow paths",
 			});
-		return render(results, 50, 8192, offset);
+		return (
+			render(results, 50, 8192, offset) +
+			(!snapshot.complete ? "\nDependency inventory incomplete; workspace dependency freshness unverified" : "")
+		);
 	}
-	private async entries(mode: string, id: string): Promise<FileResult[]> {
-		const snapshot = await inventory(this.root);
+	private async entries(mode: string, id: string, signal = new AbortController().signal): Promise<FileResult[]> {
+		const config = await configuration(this.root);
+		const snapshot = await inventory(this.root, 10000, signal, config.exclude, this.root, true);
+		snapshot.version = hash(snapshot.version + config.version);
 		const session = this.session(id);
 		const files = mode === "delta" ? session.current : session.touched;
 		const results: FileResult[] = [];
-		for (const path of files) {
+		for (const path of [...files].sort()) {
+			signal.throwIfAborted();
 			const entry = this.cache.get(path) ?? this.cache.get(`lsp:${path}`);
 			if (!entry) {
 				results.push({ path, state: "pending", findings: [] });
@@ -172,7 +211,10 @@ export class Engine {
 				// Missing or inaccessible explicit paths cannot retain a fresh result.
 			}
 			results.push(
-				entry.version === snapshot.version && entry.content === content && snapshot.complete
+				entry.version === snapshot.version &&
+					entry.content === content &&
+					snapshot.complete &&
+					entry.identity === (await analysisIdentity(this.root, [path], config, signal))
 					? entry.result
 					: { ...entry.result, state: "stale", note: "Workspace changed; run active diagnostics" },
 			);
@@ -200,172 +242,238 @@ export class Engine {
 			? `session=${id}\n${render(changed, 10, 1800)}\nDetails: check_diagnostics mode=all workspace=${this.root}`
 			: "";
 	}
-	async hook(input: Record<string, unknown>, signal: AbortSignal): Promise<string> {
-		const id = text(input["session_id"], "hook");
-		const session = this.session(id, text(input["turn_id"]));
-		const snapshot = await inventory(this.root);
-		const event = text(input["hook_event_name"], "PostToolUse");
-		if (event === "SessionStart" || event === "PreToolUse") {
-			if (!session.hasBaseline) {
-				session.baseline = snapshot.files;
-				session.hasBaseline = true;
-			}
-			return "";
-		}
-		if (event === "SessionEnd") {
-			this.sessions.delete(id);
-			return "";
-		}
-		// Without a prior baseline, adopt the current tree as dirty-preexisting state instead of
-		// treating every tracked file as a fresh mutation from this turn.
-		if (!session.hasBaseline) {
-			session.baseline = snapshot.files;
-			session.hasBaseline = true;
-			return "";
-		}
-		const changed = [...snapshot.files]
-			.filter(([path, version]) => session.baseline.get(path) !== version)
-			.map(([path]) => path);
-		for (const path of session.baseline.keys())
-			if (!snapshot.files.has(path)) {
-				this.cache.delete(path);
-				this.cache.delete(`lsp:${path}`);
-				session.touched.delete(path);
-				session.current.delete(path);
-				session.shown.delete(path);
-			}
-		session.baseline = snapshot.files;
-		const stopping = event === "Stop" || event === "SubagentStop";
-		if (stopping && input["stop_hook_active"] === true) return "";
-		const retry = stopping
-			? (await this.entries("all", id))
-					.filter((entry) => entry.state === "pending" || entry.state === "stale")
-					.map((entry) => entry.path)
-			: [];
-		const paths = [...new Set([...changed, ...retry])];
-		if (paths.length) await this.check(paths, id, session.turn, false, signal);
-		const output = await this.feedback(id);
-		if (!output) return "";
-		if (stopping) {
-			const errors = (await this.entries("all", id)).some(
-				(entry) => entry.state === "complete" && entry.findings.some((finding) => finding.severity === "error"),
-			);
-			return JSON.stringify(errors ? { decision: "block", reason: output } : { systemMessage: output });
-		}
-		return JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: output } });
-	}
 	dispatch(operation: string, args: Record<string, unknown>, signal: AbortSignal): Promise<string> {
+		const writes = operation === "lsp_format" || (operation === "lsp_navigation" && args["operation"] === "rename");
+		let started = false;
 		const task = this.queue.then(() => {
+			started = true;
 			signal.throwIfAborted();
 			return this.execute(operation, args, signal);
 		});
 		this.queue = task.catch(() => undefined);
-		return task;
+		return new Promise((resolve, reject) => {
+			const abort = () => {
+				if (!started || !writes) reject(new Error("Request cancelled while queued or executing"));
+				if (started) void this.close().catch(() => logEvent("cancel-cleanup-failure"));
+			};
+			signal.addEventListener("abort", abort, { once: true });
+			if (signal.aborted) abort();
+			void task.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+		});
 	}
-	private async paths(args: Record<string, unknown>, snapshot: Inventory): Promise<string[]> {
+	private async paths(
+		args: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<{ paths: string[]; complete: boolean }> {
+		const config = await configuration(this.root);
 		const values = Array.isArray(args["paths"]) ? args["paths"] : [text(args["path"], ".")];
 		if (values.length > 200 || !values.every((value) => typeof value === "string"))
 			throw new Error("paths must contain at most 200 strings");
 		const paths = new Set<string>();
+		let complete = true;
 		for (const value of values) {
 			if (typeof value !== "string") continue;
+			signal.throwIfAborted();
 			const absolute = await workspacePath(this.root, value);
-			const prefix = relative(this.root, absolute);
-			if ((await stat(absolute)).isFile()) paths.add(prefix);
-			else
-				for (const path of snapshot.files.keys())
-					if (!prefix || path.startsWith(`${prefix}${sep}`)) paths.add(path);
+			if ((await stat(absolute)).isFile()) paths.add(relative(this.root, absolute));
+			else {
+				const scoped = await inventory(this.root, 10000, signal, config.exclude, absolute);
+				complete &&= scoped.complete;
+				for (const path of scoped.files.keys()) {
+					paths.add(path);
+					if (paths.size > 10000) {
+						complete = false;
+						break;
+					}
+				}
+			}
+			if (paths.size > 10000) break;
 		}
-		return [...paths];
+		return { paths: [...paths].sort().slice(0, 10000), complete };
 	}
+	private revision(args: Record<string, unknown>, version: string): void {
+		if ((number(args["start"], 0) || number(args["offset"], 0)) && args["revision"] !== version)
+			throw new Error("Invalid or missing revision; restart from start=0 offset=0");
+	}
+	private async fingerprints(paths: string[], signal: AbortSignal): Promise<string[]> {
+		const contents: string[] = [];
+		for (const path of paths) {
+			signal.throwIfAborted();
+			try {
+				const absolute = await workspacePath(this.root, path);
+				const info = await stat(absolute);
+				contents.push(
+					path,
+					info.size > 1024 * 1024
+						? `oversized:${info.size}:${info.mtimeMs}`
+						: hash(await readFile(absolute, { encoding: "utf8", signal })),
+				);
+			} catch (error) {
+				signal.throwIfAborted();
+				contents.push(path, `unavailable:${message(error)}`);
+			}
+		}
+		return contents;
+	}
+
 	private async execute(operation: string, args: Record<string, unknown>, signal: AbortSignal): Promise<string> {
-		if (operation === "hook") return this.hook(args, signal);
+		if (operation === "release") {
+			await this.close();
+			this.cache.clear();
+			return "";
+		}
+		const config = await configuration(this.root);
+		if (this.configVersion !== config.version || args["refresh"] === true) {
+			await this.close();
+			this.cache.clear();
+			this.configVersion = config.version;
+		}
+		const store = new Metadata(this.root);
+		const ids = await store.ids();
+		for (const id of this.sessions.keys())
+			if (!ids.includes(id) && (await store.read(id)).turn === "__ended__") this.sessions.delete(id);
+		for (const id of ids) {
+			const state = await store.read(id);
+			if (state.turn === "__ended__") {
+				this.sessions.delete(id);
+				continue;
+			}
+			const session = this.session(id, state.turn);
+			session.touched = new Set(state.touched);
+			session.current = new Set(state.current);
+		}
 		const mode = text(args["mode"], "delta");
 		if (operation === "check_diagnostics" && mode === "status")
 			return `workspace=${this.root}\nsessions=${[...this.sessions.keys()].join(",") || "none"}\ncache=${this.cache.size}`;
 		const id = this.id(args["session"]);
-		if (operation === "check_diagnostics" && (mode === "all" || mode === "delta"))
-			return this.cached(mode, id, number(args["offset"], 0));
+		if (operation === "check_diagnostics" && (mode === "all" || mode === "delta")) {
+			let entries = await this.entries(mode, id, signal);
+			if (args["path"] || args["paths"]) {
+				const scope = await this.paths(args, signal);
+				entries = entries.filter((entry) => scope.paths.includes(entry.path));
+			}
+			const revision = hash(
+				JSON.stringify([
+					operation,
+					mode,
+					args["path"],
+					args["paths"],
+					config.version,
+					(await inventory(this.root, 10000, signal, config.exclude, this.root, true)).version,
+					await this.fingerprints(
+						entries.map((entry) => entry.path),
+						signal,
+					),
+					entries,
+				]),
+			);
+			this.revision(args, revision);
+			return `${render(entries, 50, 8192, number(args["offset"], 0))}\nrevision=${revision}`;
+		}
 		if (operation === "lsp_navigation") {
-			this.language ??= new Languages(this.root);
-			const before = args["operation"] === "rename" ? await inventory(this.root) : undefined;
-			const output = await this.language.navigate(args, signal);
+			const path = relative(this.root, await workspacePath(this.root, text(args["path"])));
+			const identity = await analysisIdentity(this.root, [path], config, signal);
+			if (this.identities.has(path) && this.identities.get(path) !== identity) {
+				await this.close();
+				this.cache.clear();
+			}
+			this.identities.set(path, identity);
+			const snapshot = await inventory(this.root, 10000, signal, config.exclude, this.root, true);
+			snapshot.version = hash(snapshot.version + config.version);
+			await this.synchronize(snapshot);
+			this.language ??= new Languages(this.root, await configuration(this.root));
+			const before = args["operation"] === "rename" ? await inventory(this.root, 10000, signal) : undefined;
+			let output: string;
+			try {
+				output = await this.language.navigate(args, signal);
+			} finally {
+				if (before) this.cache.clear();
+			}
 			if (before) {
 				this.cache.clear();
-				const after = await inventory(this.root);
+				const after = await inventory(this.root, 10000, signal).catch((error: unknown) => {
+					throw new Error(`${message(error)}; ${output}`);
+				});
 				const changed = [...after.files]
 					.filter(([path, version]) => before.files.get(path) !== version)
 					.map(([path]) => path);
-				await this.check([...new Set([text(args["path"]), ...changed])], id, "manual", false, signal);
+				try {
+					await this.check(
+						[...new Set([text(args["path"]), ...changed])],
+						id,
+						this.session(id).turn,
+						false,
+						signal,
+					);
+				} catch (error) {
+					throw new Error(`${message(error)}; ${output}`);
+				}
 			}
 			return output;
 		}
-		const snapshot = await inventory(this.root);
-		const paths = await this.paths(args, snapshot);
+		const scope = await this.paths(args, signal);
+		const paths = scope.paths;
 		if (operation === "lsp_format") {
 			if (!args["paths"] && !args["path"]) throw new Error("Explicit formatting paths required");
 			if (paths.length > 200) throw new Error("Format at most 200 explicitly scoped files");
-			this.language ??= new Languages(this.root);
-			const lines = [];
-			for (const path of paths)
-				lines.push((await formatWithRunner(this.root, path, signal)) ?? (await this.language.format(path, signal)));
-			await this.check(paths, id, "manual", false, signal);
+			this.language ??= new Languages(this.root, await configuration(this.root));
+			const lines: string[] = [];
+			try {
+				for (const path of paths) {
+					signal.throwIfAborted();
+					lines.push(
+						(await formatWithRunner(this.root, path, signal)) ?? (await this.language.format(path, signal)),
+					);
+				}
+				await this.check(paths, id, "manual", false, signal);
+			} catch (error) {
+				throw new Error(`${message(error)}; completed writes: ${lines.join("; ") || "none"}`);
+			} finally {
+				this.cache.clear();
+			}
 			return lines.join("\n").slice(0, 8000) || "No files";
 		}
 		if (operation !== "lsp_diagnostics" && !(operation === "check_diagnostics" && mode === "full"))
 			throw new Error("Unknown tool or mode");
+		const snapshot = await inventory(this.root, 10000, signal, config.exclude, this.root, true);
+		const contents = await this.fingerprints(paths, signal);
+		const revision = hash(
+			JSON.stringify([
+				operation,
+				mode,
+				args["path"],
+				args["paths"],
+				contents,
+				snapshot.version,
+				await analysisIdentity(this.root, paths, config, signal),
+			]),
+		);
+		this.revision(args, revision);
 		const start = number(args["start"], 0);
 		const selected = paths.slice(start, start + 200);
-		const output = await this.check(
+		await store.update(id, signal, (state) => {
+			state.touched.push(...selected);
+			state.current.push(...selected);
+		});
+		let output = await this.check(
 			selected,
 			id,
-			"manual",
+			this.session(id).turn,
 			operation === "lsp_diagnostics",
 			signal,
 			number(args["offset"], 0),
 		);
-		return `${output}${start + 200 < paths.length ? `\npartial; next start=${start + 200}; remaining files=${paths.length - start - 200}` : ""}${!snapshot.complete ? "\npartial; inventory exceeded budget" : ""}`;
+		if (start + 200 < paths.length || !scope.complete) output = output.replace(/^complete;/, "partial;");
+		return `${output}${start + 200 < paths.length ? `\npartial; next start=${start + 200}; remaining files=${paths.length - start - 200}` : ""}${!scope.complete ? "\npartial; scope inventory exceeded budget" : ""}\nrevision=${revision}`;
+	}
+	async dispose(): Promise<void> {
+		await this.close();
+		await this.queue;
+		await this.close();
 	}
 	async close(): Promise<void> {
-		await this.language?.close();
-	}
-	async save(path: string): Promise<void> {
-		await writeFile(
-			path,
-			JSON.stringify({
-				sessions: [...this.sessions].map(([id, session]) => [
-					id,
-					{
-						turn: session.turn,
-						hasBaseline: session.hasBaseline,
-						touched: [...session.touched],
-						baseline: [...session.baseline],
-					},
-				]),
-			}),
-			{ mode: 0o600 },
-		);
-	}
-	async restore(path: string): Promise<void> {
-		try {
-			const data: unknown = JSON.parse(await readFile(path, "utf8"));
-			if (!record(data) || !Array.isArray(data["sessions"])) return;
-			// Restore delivery boundaries only; never trust a previous process's diagnostics as fresh.
-			for (const row of data["sessions"])
-				if (Array.isArray(row) && typeof row[0] === "string" && record(row[1])) {
-					const session = this.session(row[0], text(row[1]["turn"]));
-					session.hasBaseline = row[1]["hasBaseline"] === true;
-					const baseline = row[1]["baseline"];
-					if (Array.isArray(baseline))
-						for (const pair of baseline)
-							if (Array.isArray(pair) && typeof pair[0] === "string" && typeof pair[1] === "string")
-								session.baseline.set(pair[0], pair[1]);
-					const touched = row[1]["touched"];
-					if (Array.isArray(touched))
-						for (const value of touched) if (typeof value === "string") session.touched.add(value);
-				}
-		} catch {
-			/* Missing/corrupt state is a cold cache, never a clean scan. */
-		}
+		const language = this.language;
+		this.language = undefined;
+		await language?.close();
 	}
 }

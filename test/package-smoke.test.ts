@@ -65,7 +65,7 @@ function readMcpJson(path: string): McpJson {
 }
 
 describe("plugin package metadata", () => {
-	it("ships a self-contained bundle entry without skills or runtime package deps", () => {
+	it("ships a self-contained bundle entry with its tool guidance skill and no runtime package deps", () => {
 		const packageJson = readPackageJson("package.json");
 		const pluginJson = readPluginJson(".codex-plugin/plugin.json");
 		const hooksJson = readHooksJson("hooks/hooks.json");
@@ -77,7 +77,7 @@ describe("plugin package metadata", () => {
 		const sessionStart = hooksJson.hooks["SessionStart"]?.[0]?.hooks[0]?.command;
 
 		expect(pluginJson.version).toBe(packageJson.version);
-		expect(packageJson.version).toBe("0.3.0");
+		expect(packageJson.version).toBe("0.4.0");
 		expect(packageJson.type).toBe("module");
 		expect(packageJson.packageManager).toBe("npm@11.12.1");
 		expect(packageJson.dependencies).toBeUndefined();
@@ -85,6 +85,7 @@ describe("plugin package metadata", () => {
 		expect(packageJson.files).toEqual([
 			"dist",
 			"hooks",
+			"skills",
 			".codex-plugin",
 			".mcp.json",
 			"LICENSE",
@@ -92,12 +93,12 @@ describe("plugin package metadata", () => {
 			"README.md",
 			"CHANGELOG.md",
 		]);
-		expect(packageJson.files).not.toContain("skills");
+		expect(packageJson.files).toContain("skills");
 		expect(packageJson.bin["codex-lsp"]).toBe("./dist/cli.js");
 		expect(pluginJson.hooks).toBe("./hooks/hooks.json");
 		expect(pluginJson.mcpServers).toBe("./.mcp.json");
-		expect(pluginJson.skills).toBeUndefined();
-		expect(existsSync("skills/lsp/SKILL.md")).toBe(false);
+		expect(pluginJson.skills).toBe("./skills/");
+		expect(existsSync("skills/lsp/SKILL.md")).toBe(true);
 		expect(cliSource.startsWith("#!/usr/bin/env node")).toBe(true);
 		expect(sessionStart).toBe(`node "${pluginRoot}/dist/cli.js" hook`);
 		expect(postToolUse).toBe(`node "${pluginRoot}/dist/cli.js" hook`);

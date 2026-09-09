@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
 import { message, record, text } from "./results.js";
-import { request } from "./worker.js";
+import { Runtime } from "./runtime.js";
 
 const string = { type: "string" };
 const scope = {
@@ -13,6 +13,16 @@ const scope = {
 	paths: { type: "array", items: string, maxItems: 200 },
 };
 const paging = {
+	revision: {
+		type: "string",
+		description:
+			"Version returned by the first page; required for nonzero start/offset. Restart from zero if changed.",
+	},
+	refresh: {
+		type: "boolean",
+		description:
+			"Active diagnostics only: bypass results and rebuild LSP clients. Use after external config or tool installation changes.",
+	},
 	offset: { type: "integer", minimum: 0, maximum: 10000 },
 	start: { type: "integer", minimum: 0, maximum: 10000 },
 };
@@ -33,7 +43,7 @@ function tool(
 export const TOOLS = [
 	tool(
 		"check_diagnostics",
-		"LSP/lint state: delta=current turn, all=session touched cache, full=active bounded repository scan, status=runtime. Stale/partial is not clean. Use start/offset continuation when returned.",
+		"Process-local LSP/lint results: delta=current turn, all=session touched, full=active scoped scan, status=runtime. Hook-only files are pending. complete covers this scope and executed channels, not build/tests. Continuations require revision.",
 		{ ...scope, ...paging, mode: { type: "string", enum: ["delta", "all", "full", "status"] } },
 		[],
 		true,
@@ -68,12 +78,18 @@ export const TOOLS = [
 	),
 ];
 function validateArguments(name: string, args: Record<string, unknown>): void {
+	if (
+		args["refresh"] !== undefined &&
+		!(name === "lsp_diagnostics" || (name === "check_diagnostics" && args["mode"] === "full"))
+	)
+		throw new Error("refresh requires active diagnostics");
 	const definition = TOOLS.find((entry) => entry.name === name);
 	if (!definition) throw new Error("Unknown tool");
 	for (const key of definition.inputSchema.required) if (args[key] === undefined) throw new Error(`${key} required`);
 	for (const [key, value] of Object.entries(args)) {
 		const schema = definition.inputSchema.properties[key];
 		if (!record(schema)) throw new Error(`Unknown argument: ${key}`);
+		if (schema["type"] === "boolean" && typeof value !== "boolean") throw new Error(`${key} must be a boolean`);
 		if (schema["type"] === "string" && typeof value !== "string") throw new Error(`${key} must be a string`);
 		if (schema["type"] === "integer") {
 			if (
@@ -96,6 +112,7 @@ export async function runMcp(
 	input: NodeJS.ReadableStream = process.stdin,
 	output: NodeJS.WritableStream = process.stdout,
 ): Promise<void> {
+	const runtime = new Runtime();
 	const controllers = new Map<string | number, AbortController>();
 	const pending = new Set<Promise<void>>();
 	const send = (value: unknown) => output.write(`${JSON.stringify(value)}\n`);
@@ -121,7 +138,7 @@ export async function runMcp(
 		if (method === "initialize") {
 			ok({
 				protocolVersion: text(params["protocolVersion"], "2024-11-05"),
-				serverInfo: { name: "codex-lsp", version: "0.3.0" }, // keep in sync with package.json
+				serverInfo: { name: "codex-lsp", version: "0.4.0" }, // keep in sync with package.json
 				capabilities: { tools: { listChanged: false } },
 			});
 			return;
@@ -158,7 +175,7 @@ export async function runMcp(
 			if (!record(params["arguments"])) throw new Error("Tool arguments required");
 			const args = params["arguments"];
 			validateArguments(name, args);
-			const result = await request(text(args["workspace"]), name, args, controller.signal);
+			const result = await runtime.request(text(args["workspace"]), name, args, controller.signal);
 			ok({ content: [{ type: "text", text: result }] });
 		} catch (error) {
 			ok({ isError: true, content: [{ type: "text", text: message(error).slice(0, 2000) }] });
@@ -166,23 +183,42 @@ export async function runMcp(
 			controllers.delete(id);
 		}
 	};
+	const shutdown = () => {
+		for (const controller of controllers.values()) controller.abort();
+	};
+	const exit = () => {
+		shutdown();
+		lines.close();
+		input.pause();
+	};
+	process.once("SIGTERM", exit);
+	process.once("SIGINT", exit);
+	output.on("error", exit);
 	const lines = createInterface({ input, crlfDelay: Number.POSITIVE_INFINITY });
-	for await (const line of lines) {
-		if (!line.trim()) continue;
-		if (line.length > 1024 * 1024) {
-			send({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Request too large" } });
-			continue;
+	try {
+		for await (const line of lines) {
+			if (!line.trim()) continue;
+			if (line.length > 1024 * 1024) {
+				send({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Request too large" } });
+				continue;
+			}
+			let value: unknown;
+			try {
+				value = JSON.parse(line);
+			} catch {
+				send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Invalid JSON" } });
+				continue;
+			}
+			const task = handle(value);
+			pending.add(task);
+			void task.finally(() => pending.delete(task));
 		}
-		let value: unknown;
-		try {
-			value = JSON.parse(line);
-		} catch {
-			send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Invalid JSON" } });
-			continue;
-		}
-		const task = handle(value);
-		pending.add(task);
-		void task.finally(() => pending.delete(task));
+	} finally {
+		shutdown();
+		await Promise.allSettled(pending);
+		await runtime.close();
+		process.removeListener("SIGTERM", exit);
+		process.removeListener("SIGINT", exit);
+		output.removeListener("error", exit);
 	}
-	await Promise.all(pending);
 }

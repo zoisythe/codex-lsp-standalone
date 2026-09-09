@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, matchesGlob, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { TextEdit } from "../packages/lsp-tools-mcp/dist/lsp/types.js";
 
@@ -39,36 +39,62 @@ export interface Inventory {
 	version: string;
 	complete: boolean;
 }
-export async function inventory(root: string, maxFiles = 10000): Promise<Inventory> {
+export async function inventory(
+	root: string,
+	maxFiles = 10000,
+	signal?: AbortSignal,
+	exclude: string[] = [],
+	scope = root,
+	dependencyOnly = false,
+): Promise<Inventory> {
+	signal?.throwIfAborted();
+	const included = (name: string) =>
+		!name.split(/[\\/]/).some((part) => SKIP.has(part)) &&
+		!exclude.some((pattern) => matchesGlob(name.split(sep).join("/"), pattern));
 	let names: string[];
 	let complete = true;
 	try {
 		const { stdout } = await exec(
 			"git",
 			["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "."],
-			{ cwd: root, timeout: 5000, maxBuffer: 4 * 1024 * 1024 },
+			{ cwd: scope, timeout: 5000, maxBuffer: 4 * 1024 * 1024, ...(signal ? { signal } : {}) },
 		);
-		names = [...new Set(stdout.split("\0").filter(Boolean))];
-	} catch {
+		names = [
+			...new Set(
+				stdout
+					.split("\0")
+					.filter(Boolean)
+					.map((name) => relative(root, join(scope, name))),
+			),
+		].filter(included);
+	} catch (error) {
+		signal?.throwIfAborted();
+		if (error instanceof Error && "killed" in error && error.killed)
+			throw new Error("Git discovery timed out; baseline retained");
 		names = [];
 		const walk = async (dir: string): Promise<void> => {
-			for (const entry of await readdir(dir, { withFileTypes: true })) {
-				if (names.length >= maxFiles) {
+			for (const entry of (await readdir(dir, { withFileTypes: true })).sort((a, b) =>
+				a.name.localeCompare(b.name),
+			)) {
+				signal?.throwIfAborted();
+				if (names.length > maxFiles) {
 					complete = false;
 					break;
 				}
 				if (SKIP.has(entry.name) || entry.isSymbolicLink()) continue;
 				const path = join(dir, entry.name);
 				if (entry.isDirectory()) await walk(path);
-				else if (entry.isFile()) names.push(relative(root, path));
+				else if (entry.isFile() && included(relative(root, path))) names.push(relative(root, path));
 			}
 		};
-		await walk(root);
+		await walk(scope);
 	}
 	const files = new Map<string, string>();
 	names.sort();
 	if (names.length > maxFiles) complete = false;
+	if (!complete && dependencyOnly) return { files, complete: false, version: hash(JSON.stringify(names)) };
 	for (const name of names.slice(0, maxFiles)) {
+		signal?.throwIfAborted();
 		if (name.split(/[\\/]/).some((part) => SKIP.has(part))) continue;
 		try {
 			const path = await workspacePath(root, name);
@@ -78,8 +104,12 @@ export async function inventory(root: string, maxFiles = 10000): Promise<Invento
 				complete = false;
 				continue;
 			}
-			files.set(relative(root, path), hash(await readFile(path, "utf8")));
+			files.set(
+				relative(root, path),
+				hash(await readFile(path, { encoding: "utf8", ...(signal ? { signal } : {}) })),
+			);
 		} catch (error) {
+			signal?.throwIfAborted();
 			if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) complete = false;
 		}
 	}

@@ -2,114 +2,109 @@
 
 [![ci](https://github.com/zoisythe/codex-lsp-standalone/actions/workflows/ci.yml/badge.svg)](https://github.com/zoisythe/codex-lsp-standalone/actions/workflows/ci.yml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Standalone Codex plugin that bundles an LSP worker for post-edit diagnostics plus four static MCP tools. Development still uses the [`lsp-tools-mcp`](https://github.com/zoisythe/lsp-tools-mcp) submodule; installed copies run only the committed `dist/cli.js` bundle.
+Standalone Codex plugin with four static MCP tools and short, independent lint Hooks. Installed copies run the self-contained `dist/cli.js`; only development uses the [`lsp-tools-mcp`](https://github.com/zoisythe/lsp-tools-mcp) submodule. Requires Node.js `>=24.20.0`.
 
-## Architecture
+## Execution and tools
 
 ```text
-Codex --stdio--> dist/cli.js mcp -------+
-                                      +--> workspace worker --> LspManager / lint runners
-Codex --Hook--> dist/cli.js hook -------+                      --> shared result cache
+Codex --stdio--> MCP process --> workspace Engine --> LspManager / lint
+Codex --Hook---> short Hook process ----------------> independent lint
+                          shared session metadata only
 ```
 
-- MCP initialize does not start language servers.
-- Hooks are short-lived clients; the worker is shared per normalized workspace.
-- Everyday hooks never format or lint-fix. `lsp_format` and rename are explicit writes.
-- No Skills are installed.
+Each MCP process owns its LSP clients and results. Initialization is lazy; after two idle minutes the workspace releases LSP clients while keeping stdio open. The next active request recreates clients. Hooks never start LSP or send commands to another process. Automatic checks never install tools, format, or lint-fix. A short `lsp` Skill explains tool selection and calling conventions; invoke `$lsp` when needed.
 
-## MCP tools
-
-| Tool | Role |
+| Tool | Behavior |
 | --- | --- |
-| `check_diagnostics` | Unified LSP/lint state: `delta`, `all`, `full`, `status` |
-| `lsp_diagnostics` | Active pure-LSP diagnostics for paths/directories |
+| `check_diagnostics` | `delta`: current turn; `all`: session touched files; `full`: active scoped LSP/lint; `status`: runtime |
+| `lsp_diagnostics` | Active LSP-only checks of files or directories |
 | `lsp_navigation` | definition / references / symbols / prepare_rename / rename |
-| `lsp_format` | Explicit formatter or LSP formatting for scoped paths |
+| `lsp_format` | Explicit scoped project formatter or LSP formatting |
 
-All tools require an absolute `workspace` path. Positions for navigation are 1-based. `all` only reads this session's touched files; it is not a repository scan. `full` and directory checks use a bounded inventory (10,000 files, 1 MiB per file), with up to 200 checks per request. Follow `start`/`offset` continuations on an unchanged tree; narrow the scope if inventory is incomplete. Explicit files bypass ignore filtering, but must resolve inside the workspace and are content-validated before cache reuse.
+Every tool requires an absolute `workspace`. Navigation positions are 1-based. Rename and format write files sequentially, report partial writes on failure, and invalidate affected results; they are never automatically retried or rolled back.
 
-Navigation is conservatively marked as a write-capable tool because it includes rename. Codex may ask for approval even for definition/prepare-rename. Non-interactive `codex exec` with approval policy `never` will reject these calls unless the user has explicitly approved the plugin tool policy.
+`all` is not a repository scan. It reads this MCP process's results against the shared session touched boundary. Files checked only by Hooks show **pending**, requiring active diagnostics. Supply `session` when more than one session uses the workspace; a single session is selected automatically.
+
+## Scopes and continuation
+
+Scans allow at most 10,000 inventoried files, 200 checked files per request, and 1 MiB per file. Directory budgets apply to the requested scope after ignore/exclude filtering. Explicit files bypass filtering but must remain inside the workspace and satisfy the size limit.
+
+A small directory can be actively checked even when the workspace dependency inventory is incomplete; results then say that whole-workspace dependency freshness is unverified and cannot be reused as fresh cached diagnostics. An over-budget root scan is always partial.
+
+The first page returns `revision=<hash>`. Pass that value with every nonzero `start` or `offset`, using the same tool, mode and scope. File additions, removals, content/config changes or changed cached results invalidate continuation; restart from zero. `all`/`delta` output pagination uses the same rule.
+
+`complete` means the declared scope and executed channels completed. It does **not** mean the project passed all type checks, builds, or tests. Combined checks display LSP and lint channel states separately.
 
 ## Hooks
 
-| Event | Behavior |
-| --- | --- |
-| `SessionStart` | Record the current file fingerprint baseline |
-| `PostToolUse` | Recheck files whose content changed since the baseline, including shell mutations |
-| `PreToolUse` | Recover a missing initial baseline without replacing an existing one |
-| `Stop` | Bounded retry of pending/stale touched files; fresh errors can block once |
-| `SessionEnd` | Drop session delivery state |
+| Event | Behavior | Budget / host timeout |
+| --- | --- | --- |
+| SessionStart / PreToolUse | Establish a missing baseline, preserve an existing one | 5 s / 10 s |
+| PostToolUse | Register mutations, lint changes then pending files | 5 s / 10 s |
+| Stop | Recheck touched/pending content; fresh lint errors may block once | 45 s / 50 s |
+| SessionEnd | Clear session boundaries using a versioned tombstone | 2 s / 3 s |
 
-Hook output is compact additional context after edits, or a single Stop reason. Missing tools/timeouts degrade to short notes; incomplete results are never reported as clean.
+The budget includes root discovery, state reads, Git/traversal and lint, with time reserved for cleanup/output. Incomplete discovery retains the baseline; unfinished checks stay pending for a later Hook. Feedback is deduplicated by content, effective configuration and finding fingerprints. Hooks identify lint separately and say **LSP not executed**; use `check_diagnostics mode=full` when needed. Warnings, missing tools, pending checks and unexecuted LSP never block Stop. Missing `session_id` disables automatic checking with a short note.
 
 ## Configuration
 
-Project LSP config (requires user trust for executable project settings):
-
-```text
-.codex/lsp-client.json
-```
-
-User config:
-
-```text
-~/.codex/lsp-client.json
-```
-
-Example:
+User settings: `$CODEX_HOME/lsp-client.json` (default `~/.codex/lsp-client.json`). Project settings: `<workspace>/.codex/lsp-client.json`. `LSP_TOOLS_MCP_USER_CONFIG` and `LSP_TOOLS_MCP_PROJECT_CONFIG` override these paths; relative user overrides resolve from the home directory, relative project overrides from the workspace. Trust is always read from that same effective **user** file.
 
 ```json
 {
+  "trustedWorkspaces": ["/absolute/path/to/repo"],
+  "lint": { "javascript": "auto", "python": "auto" },
+  "exclude": ["generated/**", "**/*.snapshot"],
   "lsp": {
     "typescript": {
       "command": ["typescript-language-server", "--stdio"],
       "extensions": [".ts", ".tsx", ".js", ".jsx"]
     }
-  },
-  "trustedWorkspaces": ["/absolute/path/to/repo"]
+  }
 }
 ```
 
-Put `trustedWorkspaces` in the **user** config, not repository config; a repository cannot trust itself. Independent lint runners (Biome, ESLint, Ruff) run only for trusted workspaces and only when the matching project config is present. Biome takes precedence over ESLint for JS/TS when both configs exist; Python uses Ruff. They check; they do not fix or install packages. Ruff runs with `--no-cache` so it does not introduce files into Hook tracking.
+Put `trustedWorkspaces` in the user file; a repository cannot trust itself. Project settings are ignored without user trust, and independent linters require trust. `CODEX_LSP_TRUST_PROJECT=1` is an explicit environment opt-in for controlled automation.
 
-Language servers themselves are not bundled. Install the servers your projects need on `PATH`.
+- JavaScript selection: `auto | biome | eslint | off`, covering the existing JS/TS/JSON/CSS extensions supported by the Runner. Python: `auto | ruff | off` for `.py`.
+- `auto` prefers Biome over ESLint when matching configuration exists; Python uses Ruff. Explicit selection tries only that tool and requires matching project configuration. Missing tools/config are reported without fallback. `off` disables lint, not explicit formatting.
+- `lint` merges by field: project > user > default. A project `exclude` replaces the entire user array. Exclusions use Node's built-in glob matching on workspace-relative forward-slash paths; no negation rules.
+- Effective plugin configuration, LSP/Runner identity and direct tool configuration content participate in cache validation. Workspace content changes conservatively invalidate results. Configuration changes recreate clients as necessary.
 
-## Codex plugin layout
+After changing external configuration dependencies, virtual environments or tool installations, use `refresh: true` on `lsp_diagnostics` or `check_diagnostics mode=full`. It bypasses results and rebuilds LSP clients in that workspace. Other modes reject `refresh`. No dependency graph or persistent diagnostic cache is maintained.
 
-- `.codex-plugin/plugin.json` — plugin discovery
-- `.agents/plugins/marketplace.json` — local/GitHub marketplace entry
-- `.mcp.json` — `node ./dist/cli.js mcp`, with plugin-relative `cwd: "."`
-- `hooks/hooks.json` — SessionStart / PreToolUse / PostToolUse / Stop / SessionEnd
-- `dist/cli.js` — self-contained runtime bundle
+Language servers and project linters are prerequisites, not bundled or automatically installed. TypeScript language servers need a TypeScript distribution containing `tsserver.js`, separate from this repository's build compiler. Ruff runs with `--no-cache`.
 
-Codex CLI 0.153.4 resolves the MCP `cwd` relative to the installed plugin root; the user's project is supplied separately as `workspace`. Hook commands use `${PLUGIN_ROOT}`. This was tested with separate plugin/workspace paths containing spaces and Chinese characters, without submodule contents or runtime `node_modules` in the plugin.
-
-## Install from GitHub marketplace
+## Install
 
 ```bash
 codex plugin marketplace add https://github.com/zoisythe/codex-lsp-standalone
 codex plugin add codex-lsp@codex-lsp-standalone
 ```
 
-Adding a marketplace does not install its plugin. Start a new Codex session after installation and use `/hooks` to review/trust the exact Hook definitions. New or changed definitions require review again; installing does not grant Hook trust. The commands above follow `codex-cli 0.153.4` help (`plugin add`, not `plugin install`).
+Start a new Codex session and use `/hooks` to review/trust the exact Hook definitions. Installation does not grant Hook trust; changed definitions need review again. The plugin requires no install-time `npm install` or recursive submodule checkout. MCP uses plugin-relative `cwd: "."` and `node ./dist/cli.js mcp`; the project is supplied separately as `workspace`.
 
-The plugin itself requires no `npm install`, recursive submodule checkout, or runtime JS download. Node, language servers and project linters are prerequisites, not part of that promise. In particular, `typescript-language-server` requires a TypeScript distribution containing `tsserver.js`; the acceptance project uses TypeScript 5.9.3, separate from this repository's TypeScript 7 build compiler.
+Version 0.4.0 replaces the shared worker architecture. It uses a separate `metadata-v4-<user>` directory and never imports old worker state or connects to old workers; old workers expire under their original idle policy.
 
-See [validation evidence and remaining limitations](docs/validation.md).
+## Windows
 
-## Local development
+Windows shell calls still match the Codex Hook name `Bash`; the actual executor can be PowerShell. Native Windows Codex 0.153.4 with PowerShell 7.6.5 was verified, including Hook feedback after a command exits with code 1. Use Windows absolute paths for `workspace` when running Windows Codex from WSL.
+
+Node must be available in the process that launches Codex. With fnm, initialize its PowerShell environment and select the installed Node version in that same session. No global profile change is required. See [Windows results and resolved issues](docs/windows-validation.md), including the fixed TypeScript URI mismatch and the initial unreproduced test timeout.
+
+## Development and validation
 
 ```bash
-git submodule update --init packages/lsp-tools-mcp
 npm install
-npm run bootstrap   # rebuild submodule types/JS used by the source tree
+npm run check
 npm test
 npm run typecheck
-npm run check       # typecheck + biome + rebuild dist bundle
 ```
 
-Node.js `>=24.20.0` is required.
+The bootstrap script builds submodule types/JS for development; the committed bundle is sufficient for installed use. CI defines Linux/macOS/Windows source and dependency-free bundle jobs. Actual results and Linux Codex acceptance are recorded in [validation.md](docs/validation.md), distinct from historical 0.3.0 evidence.
 
 ## Privacy
 
-The plugin runs locally. It does not phone home. Diagnostics stay on the machine that runs Codex and the worker process.
+Execution is local. Session metadata under `CODEX_LSP_CACHE` (default: a user-specific temporary directory) contains content hashes and delivery boundaries, never findings, commands or permission credentials. A short per-session mutex protects atomic updates; contention degrades with a bounded note. Dead-writer locks are recovered using immutable lock-identity tombstones, preserving mutual exclusion across concurrent recovery. Analysis never holds that mutex.
+
+Fixed-category startup, abnormal-exit, timeout and cleanup errors use local `logs-v4` files, at most 1 MiB per instance plus one rotated file. Logs contain no source, environment values, configuration body or raw error text. Normal stdout is reserved for MCP/Hook protocol output. The plugin sends no telemetry.

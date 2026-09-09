@@ -6,7 +6,7 @@
 					{
 						"type": "command",
 						"command": "node \"${PLUGIN_ROOT}/dist/cli.js\" hook",
-						"timeout": 30,
+						"timeout": 10,
 						"statusMessage": "recording workspace baseline"
 					}
 				]
@@ -27,7 +27,13 @@
 		"PreToolUse": [
 			{
 				"matcher": "^(apply_patch|Write|Edit|Bash)$",
-				"hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/dist/cli.js\" hook", "timeout": 30 }]
+				"hooks": [
+					{
+						"type": "command",
+						"command": "node \"${PLUGIN_ROOT}/dist/cli.js\" hook",
+						"timeout": 10
+					}
+				]
 			}
 		],
 		"PostToolUse": [
@@ -37,8 +43,8 @@
 					{
 						"type": "command",
 						"command": "node \"${PLUGIN_ROOT}/dist/cli.js\" hook",
-						"timeout": 60,
-						"statusMessage": "checking LSP diagnostics"
+						"timeout": 10,
+						"statusMessage": "checking lint diagnostics"
 					}
 				]
 			}
@@ -49,7 +55,7 @@
 					{
 						"type": "command",
 						"command": "node \"${PLUGIN_ROOT}/dist/cli.js\" hook",
-						"timeout": 60,
+						"timeout": 50,
 						"statusMessage": "checking pending diagnostics"
 					}
 				]

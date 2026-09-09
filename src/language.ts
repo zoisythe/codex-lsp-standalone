@@ -6,19 +6,59 @@ import { withLspClient } from "../packages/lsp-tools-mcp/dist/lsp/client-wrapper
 import { getLanguageId } from "../packages/lsp-tools-mcp/dist/lsp/language-mappings.js";
 import { LspManager } from "../packages/lsp-tools-mcp/dist/lsp/manager.js";
 import type { Diagnostic, TextEdit, WorkspaceEdit } from "../packages/lsp-tools-mcp/dist/lsp/types.js";
+import { type Config, withConfiguration } from "./config.js";
 import { applyTextChanges, inside, inventory, workspacePath } from "./files.js";
+import { logEvent } from "./log.js";
 import { type FileResult, message, number, record, text } from "./results.js";
 
+function diagnosticUriKey(uri: string): string {
+	try {
+		const path = fileURLToPath(uri);
+		// Servers may publish file:///c%3A/... for a document opened as file:///C:/....
+		// Normalize URL escaping and Windows drive letters, preserving path case.
+		return pathToFileURL(
+			process.platform === "win32" ? path.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : path,
+		).href;
+	} catch {
+		return uri;
+	}
+}
+
 class Client extends LspClient {
+	private stopping = false;
+	private stopTask: Promise<void> | undefined;
+	override stop(): Promise<void> {
+		if (this.stopTask) return this.stopTask;
+		this.stopping = true;
+		const proc = this.proc;
+		const timer = setTimeout(() => {
+			proc?.kill("SIGKILL");
+			this.connection?.dispose();
+		}, 500);
+		this.stopTask = super.stop().finally(() => clearTimeout(timer));
+		return this.stopTask;
+	}
 	private published = new Map<string, { version?: number; items: Diagnostic[] }>();
 	private versions = new Map<string, { version: number; content: string }>();
 	override async start(): Promise<void> {
-		await super.start();
+		try {
+			await super.start();
+		} catch (error) {
+			await logEvent("startup-failure");
+			throw error;
+		}
+		void this.proc?.exited.then(() => {
+			if (!this.stopping) return logEvent("abnormal-exit");
+			return undefined;
+		});
 		this.connection?.onNotification("textDocument/publishDiagnostics", (value) => {
 			if (!record(value) || typeof value["uri"] !== "string" || !Array.isArray(value["diagnostics"])) return;
 			const items = value["diagnostics"] as Diagnostic[];
 			const version = value["version"];
-			this.published.set(value["uri"], typeof version === "number" ? { version, items } : { items });
+			this.published.set(
+				diagnosticUriKey(value["uri"]),
+				typeof version === "number" ? { version, items } : { items },
+			);
 		});
 	}
 	override async openFile(path: string): Promise<void> {
@@ -26,7 +66,7 @@ class Client extends LspClient {
 		const content = await readFile(path, "utf8");
 		const previous = this.versions.get(uri);
 		if (previous?.content === content) return;
-		this.published.delete(uri);
+		this.published.delete(diagnosticUriKey(uri));
 		const version = (previous?.version ?? 0) + 1;
 		this.versions.set(uri, { content, version });
 		if (previous) {
@@ -52,7 +92,7 @@ class Client extends LspClient {
 			changes: paths.map((path) => ({ uri: pathToFileURL(path).href, type: 2 })),
 		});
 	}
-	async collect(path: string): Promise<{ items: Diagnostic[]; ready: boolean }> {
+	async collect(path: string, signal: AbortSignal): Promise<{ items: Diagnostic[]; ready: boolean }> {
 		const uri = pathToFileURL(path).href;
 		await this.openFile(path);
 		await this.sendNotification("textDocument/didSave", { textDocument: { uri } });
@@ -69,7 +109,8 @@ class Client extends LspClient {
 				throw error;
 		}
 		for (let i = 0; i < 40; i++) {
-			const result = this.published.get(uri);
+			signal.throwIfAborted();
+			const result = this.published.get(diagnosticUriKey(uri));
 			if (result && (result.version === undefined || result.version === this.versions.get(uri)?.version))
 				return { items: result.items, ready: true };
 			await new Promise((resolve) => setTimeout(resolve, 50));
@@ -104,8 +145,12 @@ export class Languages {
 			await client.refresh(changed.map((path) => resolve(this.root, path)));
 		}
 	}
-	constructor(private readonly root: string) {
+	constructor(
+		private readonly root: string,
+		private readonly config: Config,
+	) {
 		this.manager = new LspManager({
+			idleTimeoutMs: 120000,
 			clientFactory: (root, server) => {
 				if (!inside(this.root, root))
 					throw new Error("LSP root outside workspace; choose the enclosing project as workspace");
@@ -115,13 +160,22 @@ export class Languages {
 			},
 		});
 	}
+	private withClient<T>(
+		path: string,
+		fn: (client: LspClient) => Promise<T>,
+		tool: string,
+		options: { manager: LspManager; signal: AbortSignal },
+	): Promise<T> {
+		return withConfiguration(this.config, () => withLspClient(path, fn, tool, options));
+	}
+
 	async check(path: string, signal: AbortSignal): Promise<FileResult> {
 		try {
-			return await withLspClient(
+			return await this.withClient(
 				await workspacePath(this.root, path),
 				async (client) => {
 					if (!(client instanceof Client)) throw new Error("Unexpected LSP client");
-					const result = await client.collect(await workspacePath(this.root, path));
+					const result = await client.collect(await workspacePath(this.root, path), signal);
 					return {
 						path,
 						state: result.ready ? "complete" : "pending",
@@ -143,6 +197,8 @@ export class Languages {
 			);
 		} catch (error) {
 			const note = message(error);
+			if (!/No LSP server|NOT INSTALLED/.test(note))
+				await logEvent(/timeout/i.test(note) ? "timeout" : "startup-failure");
 			return { path, state: /No LSP server|NOT INSTALLED/.test(note) ? "skipped" : "failed", findings: [], note };
 		}
 	}
@@ -151,8 +207,8 @@ export class Languages {
 		const operation = text(args["operation"]);
 		const line = number(args["line"], 1, 1, 10000000);
 		const column = number(args["column"], 1, 1, 1000000) - 1;
-		const before = operation === "rename" ? await inventory(this.root) : undefined;
-		return withLspClient(
+		const before = operation === "rename" ? await inventory(this.root, 10000, signal) : undefined;
+		return this.withClient(
 			path,
 			async (client) => {
 				let result: unknown;
@@ -203,17 +259,27 @@ export class Languages {
 			const before = await readFile(path, "utf8");
 			pending.push({ path, before, after: applyTextChanges(before, edits) });
 		}
-		if ((await inventory(this.root)).version !== version) throw new Error("Workspace changed during rename; retry");
+		if ((await inventory(this.root, 10000, signal)).version !== version)
+			throw new Error("Workspace changed during rename; retry");
 		for (const item of pending)
 			if ((await readFile(item.path, "utf8")) !== item.before) throw new Error("Rename conflict");
 		signal.throwIfAborted();
-		for (const item of pending) await writeFile(item.path, item.after);
+		const modified: string[] = [];
+		try {
+			for (const item of pending) {
+				signal.throwIfAborted();
+				await writeFile(item.path, item.after);
+				modified.push(relative(this.root, item.path));
+			}
+		} catch (error) {
+			throw new Error(`${message(error)}; modified paths: ${modified.join(", ") || "none"}`);
+		}
 		return `Renamed: ${pending.map((item) => relative(this.root, item.path)).join(", ")}`;
 	}
 	async format(path: string, signal: AbortSignal): Promise<string> {
 		const absolute = await workspacePath(this.root, path);
 		const before = await readFile(absolute, "utf8");
-		const edits = await withLspClient(
+		const edits = await this.withClient(
 			absolute,
 			async (client) => {
 				if (!(client instanceof Client)) throw new Error("Unexpected LSP client");

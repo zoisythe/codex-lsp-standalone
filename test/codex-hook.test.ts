@@ -2,7 +2,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Engine } from "../src/engine.js";
+import { HookEngine as Engine } from "../src/hook-engine.js";
+import { Metadata } from "../src/metadata.js";
 
 const roots: string[] = [];
 async function fixture(): Promise<string> {
@@ -30,7 +31,6 @@ describe("inventory-based PostToolUse hook", () => {
 		await engine.hook({ session_id: "s", hook_event_name: "PreToolUse" }, signal);
 		await engine.hook({ session_id: "s", hook_event_name: "PostToolUse" }, signal);
 		expect(checked).toContain("changed.ts");
-		await engine.close();
 	});
 	it("uses the actual Stop output schema and never creates a continuation loop", async () => {
 		const root = await fixture();
@@ -47,7 +47,6 @@ describe("inventory-based PostToolUse hook", () => {
 		expect(output.reason).toContain("broken");
 		expect(output.hookSpecificOutput).toBeUndefined();
 		expect(await engine.hook({ session_id: "s", hook_event_name: "Stop", stop_hook_active: true }, signal)).toBe("");
-		await engine.close();
 	});
 	it("adopts the first snapshot as baseline without scanning the whole tree", async () => {
 		const root = await fixture();
@@ -63,7 +62,6 @@ describe("inventory-based PostToolUse hook", () => {
 			),
 		).toBe("");
 		expect(checks).toBe(0);
-		await engine.close();
 	});
 
 	it("checks only files that changed after the baseline", async () => {
@@ -96,7 +94,6 @@ describe("inventory-based PostToolUse hook", () => {
 		);
 		expect(second).toBe("");
 		expect(checked).toEqual(["broken.ts"]);
-		await engine.close();
 	});
 
 	it("clears deleted paths and stays silent when diagnostics are clean", async () => {
@@ -120,8 +117,7 @@ describe("inventory-based PostToolUse hook", () => {
 				new AbortController().signal,
 			),
 		).toBe("");
-		expect(await engine.cached("all", "s1")).not.toContain("new.ts");
-		await engine.close();
+		expect((await new Metadata(root).read("s1")).touched).not.toContain("new.ts");
 	});
 
 	it("drops session state on SessionEnd", async () => {
@@ -144,9 +140,6 @@ describe("inventory-based PostToolUse hook", () => {
 			{ session_id: "s1", turn_id: "t1", hook_event_name: "SessionEnd", cwd: root },
 			new AbortController().signal,
 		);
-		expect(await engine.dispatch("check_diagnostics", { mode: "status" }, new AbortController().signal)).toContain(
-			"sessions=none",
-		);
-		await engine.close();
+		expect((await new Metadata(root).read("s1")).turn).toBe("__ended__");
 	});
 });

@@ -11,6 +11,7 @@ export interface FileResult {
 	state: "complete" | "pending" | "skipped" | "failed" | "stale";
 	findings: Finding[];
 	note?: string;
+	channels?: { lsp: FileResult["state"]; lint: FileResult["state"] };
 }
 export function message(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -31,6 +32,11 @@ export function render(results: FileResult[], limit = 50, byteLimit = 8192, offs
 	const lines = [
 		...new Set(
 			results.flatMap((result) => [
+				...(result.channels
+					? [
+							`${result.path} channels: lsp=${result.channels.lsp} lint=${result.channels.lint}${result.note ? `; ${result.note.replace(/\s+/g, " ").slice(0, 300)}` : ""}`,
+						]
+					: []),
 				...result.findings.map(
 					(finding) =>
 						`${finding.path}:${finding.line}:${finding.column} ${finding.severity} [${finding.source}] ${finding.message.replace(/\s+/g, " ")}`,

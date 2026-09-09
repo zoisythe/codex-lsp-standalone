@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0
+
+- Normalize Windows diagnostic URI drive letters and escaping so TypeScript push diagnostics are not left permanently pending; cover canonicalized server URIs in native subprocess tests.
+
+- Ship a concise `lsp` Skill covering tool purposes, scope/session selection, revision/refresh, and write-call conventions.
+
+- Replace shared worker IPC with process-local MCP Engines and independent lint-only Hooks. Release idle LSP clients after two minutes without closing MCP stdio.
+- Add versioned, atomic session metadata, short Hook budgets, cancellation cleanup, pending retries and fresh lint-only Stop blocking with fingerprint deduplication.
+- Add `lint.javascript`, `lint.python`, `exclude`, unified trust/config paths, configuration-aware cache validation and explicit diagnostics `refresh`.
+- Apply directory budgets within the requested scope; require content/config-bound `revision` for nonzero `start`/`offset`, including all/delta output pages.
+- Report LSP/lint channels and partial write outcomes separately; preserve explicit-only formatting/rename and bounded local error logs.
+- Extend dependency-free delivery subprocess tests to all three CI platforms. See validation.md for actual run evidence; workflow configuration is not a remote pass.
+
+
 ## Unreleased
 
 ## 0.3.0

@@ -68,4 +68,4 @@ jobs:
         with:
           node-version: "24.20.0"
       - name: Execute delivered bundle without installing dependencies
-        run: node --test test/install-smoke.test.mjs
+        run: node --test test/install-smoke.test.mjs test/runtime-e2e.test.mjs

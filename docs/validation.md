@@ -1,99 +1,61 @@
-# 本地交付验收（2026-09-08）
+# 0.4.0 本地验收（2026-09-08）
 
-本记录验证当前阶段实现，不代表 implementation-plan.md 的所有验收项已完成。
+本轮为隔离执行架构及后续追加的工具说明 Skill。0.3.0 的共享 worker 验收已移至 [历史记录](history/validation-0.3.0.md)，不能用作本版本通过证据。没有提交、推送或发布。
 
-## 环境与交付
+2026-09-09 已补充 [Windows 原生验收与修复](windows-validation.md)：修复诊断 URI 不一致，Windows 五项子进程测试及真实 Codex Hook/诊断通过。下列 2026-09-08 安装哈希为该批次历史值；当前 bundle 哈希以 Windows 验收记录为准。
 
-- Linux；Node.js 24.20.0；codex-cli 0.153.4；Codex 模型 `gpt-6-astra`。
-- 开发 submodule 固定于 `9cc6f753d04834c148d08bbca72e3b483d6301b2`。
-- 最终 bundle SHA-256：`8947693d28b1c5dcc1a2e81b27daa53398ac1255bb653b7344309cc50706c438`；再次构建哈希不变。
-- 临时 `CODEX_HOME`，从仅含 dist、manifest、Hooks、marketplace 和元数据的本地交付目录安装；插件中没有 node_modules、submodule 或 Skills。插件路径与工作区路径独立，包含空格及中文。
-- 使用 `codex plugin marketplace add <交付目录> --json`、`codex plugin add codex-lsp@codex-lsp-standalone --json` 实际安装，不是 npm pack dry-run。
-- `.mcp.json` 的相对 `cwd: "."` 由 Codex 解析到插件根目录；`node ./dist/cli.js mcp` 握手成功。工作区由工具参数传入。
-- 只在隔离 home 中使用已有登录凭据副本；不修改用户原有 Codex 配置。测试原始日志及凭据不提交。
+## 最终交付与检查
 
-## 完整检查
+- Linux，Node.js 24.20.0，codex-cli 0.153.4。
+- 开发 submodule：`9cc6f753d04834c148d08bbca72e3b483d6301b2`，未修改。
+- 发布版本保持 `0.4.0`；隔离安装使用仅存在于测试副本中的 `0.4.0+codex.20260908155418` 缓存后缀。
+- 2026-09-08 验收 bundle SHA-256：`79d48fddf9b88bfbed90cd818095389f929855afe684c0d590c67c5530c5a36e`。
+- 安装副本的 bundle 与 `skills/lsp/SKILL.md` 均逐字节匹配源码交付物；安装插件目录中没有 node_modules 或 submodule/packages。
+- `npm run check`、`npm test`、`npm run typecheck` 全部通过。共 32 个 Vitest 测试、5 个 Node 子进程测试；最后一次完整测试包含元数据持锁进程崩溃恢复。
+- Skill 通过 skill-creator 的 `quick_validate.py`；manifest 和 npm files 清单均包含 skills，干净安装测试实际复制并读取该文件。
+- `git diff --check` 通过。
 
-最终源码执行：
+## 已验证的运行行为
 
-```bash
-npm run check
-npm test
-npm run typecheck
+子进程测试执行交付 bundle，不引用开发 submodule：
+
+- 初始化不启动 LSP；同一 MCP 进程复用客户端，第二个 MCP 进程独立启动；Hook 不启动 LSP，Hook-only touched 文件在 MCP 中显示 pending。
+- 排队取消不终止正在执行的请求；执行中取消清理 LSP。慢 Runner 在 Hook 预算内被终止，pending 可在下一次 Hook 补查。
+- 格式化和 rename 部分写入后取消：已写文件被准确报告，后续文件不再写入；请求不自动重放，随后主动诊断能够恢复。EOF 后分析进程退出。
+- Hook 的 warning 不阻止 Stop；同一新鲜 error 只阻止一次；并发 Hook 不丢 touched，元数据不保存完整 findings。
+- 对元数据原子替换前注入进程强制退出，随后两个 Hook 并发恢复：死进程锁被安全移走，状态保留，pending 完成。不可变锁标识墓碑防止旧恢复请求移走新写入者的锁。
+- 超过 200 文件时声明范围显示 partial，并能带 revision 继续；配置、内容、增删文件使旧 revision 失效。错误模式使用 refresh 会报参数错误。
+
+补充行为覆盖：用户配置覆盖路径与信任一致、项目不能自授信任、lint 字段合并与 exclude 整体覆盖、Runner auto/显式/off/缺失、不回退、显式文件绕过 exclude、被排除的直接工具配置仍使缓存失效、refresh 绕过结果，以及超过 10,000 文件的仓库中仍可主动检查小目录。依赖清单不完整时不复用旧结果。
+
+## Linux 真实 Codex
+
+在独立 Codex home 和独立测试项目中，通过本地 marketplace 实际安装；项目工具为 TypeScript 5.9.3、typescript-language-server 和 Biome 2.5.12。登录凭据仅复制到隔离测试 home，原用户配置未修改，原始会话及凭据不提交。
+
+真实交互流程：
+
+1. Codex 显示五个 Hook 需要审阅，完成持久信任；未使用 Hook 信任绕过参数。
+2. apply_patch 引入 TypeScript 类型错误及未使用变量。自动 Hook 报告 Biome `noUnusedVariables` warning，并明确 `LSP not executed`。
+3. 主动 LSP 前调用 all，得到 `checked=0 pending=1`。连续两次 lsp_diagnostics 报告 TypeScript 2322，未混入独立 lint 结果。
+4. prepare_rename 成功；rename 同时更新声明和引用。修复后 full 返回 LSP/lint 两个通道 complete、零诊断。
+5. 保持 130.000 秒实际闲置后再次调用诊断成功。11:01:16 UTC 的 full 与 11:03:40 UTC 的后续 LSP 调用间没有 MCP 调用；旧 LSP PID 6143 已退出，新 PID 7416 启动。未使用加速时钟。
+6. 另将 main.ts 压成未格式化单行，实际 lsp_format 返回 `Formatted: main.ts` 并展开布局；随后 full 为 `complete; checked=1 pending=0 skipped=0 failed=0`，LSP 与 lint 均 complete。
+
+元数据锁恢复和 Skill 是上述完整交互之后的追加修改，已由最终源码的完整测试覆盖；最终安装还单独验证 Skill 读取和主动诊断，结果见下文。
+
+## 最终 Skill 调用验证
+
+使用最终安装副本启动新的 Codex exec 会话，显式请求 `$lsp`：Codex 实际读取安装目录中的 `skills/lsp/SKILL.md`，选择 `check_diagnostics mode=full`，使用指定的项目、main.ts 和 session=skill-validation。MCP 返回：
+
+```text
+complete; checked=1 pending=0 skipped=0 failed=0
+main.ts channels: lsp=complete lint=complete
 ```
 
-全部通过：4 个 Vitest 文件、15 个测试；3 个 Node 子进程集成测试。`npm test` 现在也包含原有 worker 集成测试，覆盖 Hook/MCP 复用同一个 LSP、显式写入和复查。另由 TypeScript LSP 确认源码无类型错误。
+此调用没有修改文件。它验证了最终 bundle 的主动诊断，以及 Skill 的发现、读取和工具选择。
 
-CI 新增无 submodule、无 npm install 的独立 delivery job（Ubuntu/macOS/Windows），源码 job 重建后用 `git diff --exit-code -- dist` 检查漂移。本地没有代替远端 CI 声称 macOS/Windows 已通过。
+## CI 与范围边界
 
-## Hook 信任与写工具授权
+`.github/workflows/ci.yml` 保留 Linux/macOS/Windows 源码检查，并让无 submodule、无 node_modules 的 delivery job 执行安装及 runtime 端到端子进程测试。**本轮没有远端 CI 结果**：尚未提交或推送，不能把本地 Linux 通过或 workflow 文件视为三平台通过。
 
-1. 不绕过信任时，真实 Codex MCP `status` 成功，`sessions=none`。
-2. 本地 Codex app-server `hooks/list` 返回 5 个插件 command Hook：PreToolUse、PostToolUse、SessionStart、SessionEnd、Stop；全部 `enabled=true`、`trustStatus=untrusted`，无发现错误。
-3. 阅读并审核当前命令后，后续一次性自动化使用 `--dangerously-bypass-hook-trust`。这验证已审核 Hook 的执行，不冒充交互式 `/hooks` 持久信任验收。
-4. 非交互 Codex 的 `never` 策略初次拒绝导航/格式化。仅在临时 home 预授权本次测试：
-
-```toml
-[plugins."codex-lsp@codex-lsp-standalone".mcp_servers.lsp]
-default_tools_approval_mode = "approve"
-```
-
-正式安装仍应由用户审核 Hook 和写工具；插件不自动添加此授权。
-
-## 最终 Codex 实测 A：TypeScript + Python
-
-测试项目单独安装兼容的 TypeScript 5.9.3、typescript-language-server、Pyright 和 Biome 2.5.12，使用本机 Ruff；语言服务器不属于插件交付物。TypeScript 7.0.2 不含 tsserver.js，不能作为本次 typescript-language-server 的项目运行依赖。
-
-实际 `codex exec --sandbox workspace-write` 流程：
-
-- apply_patch 引入 TS 字符串赋给 number、Python 字符串赋给 int 和未使用的 os import。
-- 自动 Hook 和 `all`/`full` 报出 TypeScript 2322、Pyright assignment error、Ruff I001/F401。
-- 两次纯 `lsp_diagnostics` 都返回相同的两条类型错误，不混入 Ruff。
-- definition、prepare_rename、rename 为 `renamedValue` 成功。
-- 修复类型错误及未使用导入；显式格式化；最终 `full` 和 `all` 均返回 `complete; checked=2 pending=0 skipped=0 failed=0`。
-- Codex 的第一次 patch 请求包含重复目标，被宿主拒绝；重试成功，不是插件通过无效补丁。
-
-11 次成功 MCP 调用：check_diagnostics 5 次、lsp_diagnostics 2 次、lsp_navigation 3 次、lsp_format 1 次。按调用顺序文本 UTF-8 字节数：113、419、419、292、292、359、67、16、37、48、48。
-
-## 最终 Codex 实测 B：JavaScript + ESLint
-
-独立非 Git 项目，ESLint flat config 启用 no-undef/no-unused-vars，项目用户信任显式授权。
-
-- shell 写入错误后同一命令 `exit 1`；实际写入仍被 Hook 检测，报告两条 ESLint 错误。
-- `all`、`full`、重复 `full` 均保留错误。
-- shell 移动 main.js 到 renamed.js，`all` 不再包含旧路径。
-- apply_patch 修复后 `lsp_format` 使用 LSP fallback，将 `export const value={a:1};` 格式化为 `export const value = { a: 1 };`，不是 lint fix。
-- 最终 `full` 和 `all` 均返回 `complete; checked=1 pending=0 skipped=0 failed=0`。
-
-7 次成功 MCP 调用：check_diagnostics 6 次、lsp_format 1 次。文本字节数：199、199、199、205、21、48、48。
-
-最终两组共启动 3 个真实 LSP：两个工作区各 1 个 TypeScript server，Python 工作区 1 个 Pyright。启动包装器写在工作区外计数，不改变插件。18 次 MCP 调用及多次 Hook 没有重复启动这些 LSP；不能据此推断普遍缓存命中率或冷/热检查执行次数。测试后 Ruff 缓存目录不存在。
-
-## 实测驱动修复
-
-- Ruff 默认生成缓存，导致非 Git Hook 将缓存当作新改动：改用 `--no-cache` 并排除 Python 常见缓存目录。
-- push 诊断失效后仅清空缓存，未触发服务器重新发布，导致格式化/移动后永久 pending：失效时关闭打开的文档，后续按最终磁盘内容重新打开，保留同一个 LspManager/client。
-- 显式忽略文件按内容校验缓存；超过 200 个变更保留 pending；rename 后复查所有清单内变化目标；MCP facade 验证必填项、类型、范围与枚举。
-
-## 推送后的真实 GitHub 安装
-
-实现提交 `50138d8` 推送到 main 后，在第二个全新隔离 Codex home 执行：
-
-```bash
-codex plugin marketplace add https://github.com/zoisythe/codex-lsp-standalone --ref main --json
-codex plugin add codex-lsp@codex-lsp-standalone --json
-```
-
-安装成功；实际安装 bundle 与本地已测 bundle 逐字节一致，不含 node_modules、Skills 或 submodule 源码。随后真实 Codex MCP `status` 成功，JSON 文件主动诊断成功。最初将 package.json 当作“不支持”的负例是测试输入错误（本机实际存在 JSON server），因此另用 `.codex_acceptance_unknown` 文件复测，明确返回 `partial; checked=0 pending=0 skipped=1 failed=0` 及缺服务器说明，不伪报 clean。未执行安装时 npm install 或递归获取 submodule。
-
-## 尚未完成的计划项
-
-以下是后续工作，不应将当前阶段称为完整设计验收：
-
-- worker 崩溃发生在连接竞态中的有界重连、无 pid 的陈旧锁恢复、日志/指标及更严格的跨 sandbox/执行边界隔离。
-- 持久化的是会话 baseline/touched 边界，不是诊断结果；重启后结果必须重新获取。
-- 队列串行化并复用完整结果，不是独立后台任务的真正 single-flight/快速编辑合并；Hook 仍可能等待接近 55 秒的请求预算。
-- 扫描为排序列表的 start/offset 分页，无绑定内容版本的续扫 token；目录变动时应从头重扫。超过库存预算仍需缩小范围。
-- 自定义 runner 路由、项目 exclude、多根/依赖配置状态更精细的缓存失效，以及更广泛的并发编辑与取消验收。
-- `/hooks` 交互式持久信任、真实超过 10 分钟的闲置连接、跨平台 CLI 实测。现有子进程测试只加速旧长定时器。
-- 远端 CI 运行结果尚未取得；不能将 CI 配置提交视作跨平台测试成功。
+没有实现持久诊断缓存、后台调度、通用 Runner 框架、多根依赖图或指标系统。外部配置依赖、虚拟环境和工具安装变化不承诺自动发现，使用 refresh 主动刷新。多文件写入不承诺事务回滚。complete 只指本次声明范围及执行通道完成，不代表项目构建或测试全部通过。

@@ -36,7 +36,7 @@ test(
 		const workspace = join(temp, "用户 workspace");
 		await mkdir(root);
 		await mkdir(workspace);
-		for (const file of ["dist", "package.json", ".mcp.json", ".codex-plugin", "hooks", "LICENSE", "NOTICE"]) {
+		for (const file of ["dist", "package.json", ".mcp.json", ".codex-plugin", "hooks", "skills", "LICENSE", "NOTICE"]) {
 			await cp(join(repo, file), join(root, file), { recursive: true });
 		}
 		const config = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
@@ -46,11 +46,11 @@ test(
 		assert.equal(server.cwd, ".");
 		const plugin = JSON.parse(await readFile(join(root, ".codex-plugin/plugin.json"), "utf8"));
 		const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-		assert.equal(plugin.skills, undefined);
-		assert(!pkg.files.includes("skills"));
+		assert.equal(plugin.skills, "./skills/");
+		assert(pkg.files.includes("skills"));
 		assert.equal(pkg.dependencies, undefined);
 		assert.equal(pkg.optionalDependencies, undefined);
-		await assert.rejects(readFile(join(repo, "skills/lsp/SKILL.md")), { code: "ENOENT" });
+		assert((await readFile(join(root, "skills/lsp/SKILL.md"), "utf8")).startsWith("---\n"));
 
 		const missing = join(workspace, "missing-config.json");
 		await writeFile(
